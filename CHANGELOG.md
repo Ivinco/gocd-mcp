@@ -1,0 +1,62 @@
+# Changelog
+
+All notable changes to this project are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.0.0] - 2026-07-13
+
+First public release. An MCP server for GoCD over Streamable HTTP (MCP `2025-11-25`),
+authenticated per-user with GoCD Personal Access Tokens.
+
+### Added
+
+- **Transport & auth**: Streamable HTTP endpoint with TLS support; bearer-token middleware
+  validating GoCD PATs against `current_user` (with a short validation cache); a per-request
+  GoCD client that acts as the authenticated user, so GoCD's own RBAC applies to every call.
+  `/healthz` and `/readyz` probes, recovery / request-id / access-log middleware, graceful
+  shutdown.
+- **Read-only tools**: `whoami`, `list_pipelines`, `get_pipeline_status`,
+  `get_pipeline_history`, `get_pipeline_instance` (per-job detail), `list_agents`,
+  `get_pipeline_config`, `get_job_console_log` (files API, with tail).
+- **Action tools** (`TOOLSET=actions|full`): `trigger_pipeline`, `pause_pipeline`,
+  `unpause_pipeline`, `cancel_stage`, `comment_on_pipeline` — with destructive/idempotent
+  annotations so hosts can require confirmation, and an audit log of every mutation.
+- **Config tools** (`TOOLSET=full`): `update_pipeline_config` (ETag/If-Match optimistic
+  locking), `create_pipeline`, `update_agent`, `delete_pipeline`.
+- **Resources**: `gocd://dashboard`, `gocd://agents`, `gocd://pipeline/{name}/config`,
+  `gocd://pipeline/{name}/history`.
+- **Toolset tiers**: a single `TOOLSET` switch (`readonly` | `actions` | `full`) gates which
+  tools are registered, so a deployment can expose the least-privileged surface it needs.
+- **Configuration** from environment variables and/or a YAML file (`CONFIG_FILE`). Every
+  parameter is readable from either source. Precedence: default < env < file (the file wins
+  per-key; omitted keys fall back to env, then to the default). `GOCD_BASE_URL` is the only
+  required setting — the server refuses to start without it. Annotated sample in
+  `config.example.yaml`.
+- **Logging**: structured JSON (`slog`) to stderr or to `LOG_FILE`. Three event types —
+  `request` (every HTTP request), `tool_call` (every tool invocation) and `audit` (every
+  mutation, with `action` / `login` / `target`), correlated by `request_id`. Tokens are never
+  logged, and tool arguments are not logged either (no config-body leakage).
+- **Tests**: domain unit tests, GoCD client contract tests (`httptest`), and end-to-end MCP
+  tests through the SDK client (auth, toolset gating, forbidden→tool-error, ETag conflict,
+  audit). The suite runs fully offline.
+
+### Notes
+
+- GoCD API media-type versions are verified against GoCD 25.4.0; mutating-endpoint versions
+  were confirmed with side-effect-free probes. GoCD versions each endpoint independently
+  (`application/vnd.go.cd.vN+json`), and config writes use optimistic locking via
+  `ETag` / `If-Match`; both are handled in `internal/gocd`.
+- Authentication is a deliberate, documented deviation from the OAuth 2.1 section of the MCP
+  spec: GoCD itself is the identity provider and the PAT is the credential. See the
+  Authentication section of the README.
+- `unpause` requires the `X-GoCD-Confirm: true` header on GoCD 25.4.0.
+
+### Known gaps
+
+- `update_agent` is contract-tested only (live verification would mutate a real agent).
+- No Prometheus metrics and no MCP prompts yet.
+- No retries to GoCD — transient failures surface as tool errors, and the agent may retry.
+- HTTP transport only; stdio is not supported yet.
+
+[1.0.0]: https://github.com/ivinco/gocd-mcp/releases/tag/v1.0.0

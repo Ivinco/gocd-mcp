@@ -1,0 +1,30 @@
+# gocd-mcp configuration (YAML).
+#
+# Point the server at this file with CONFIG_FILE=/path/to/config.yaml.
+# Every key is optional; an omitted key falls back to its environment variable,
+# then to the built-in default. When a key IS present here, it takes priority
+# over the environment variable.
+#
+# Durations use Go syntax: "30s", "2m", "1h".
+
+# Required: the root URL of your GoCD server. There is no default.
+gocd_base_url: https://gocd.example.com
+listen_addr: ":8443"
+
+# TLS (set both for native HTTPS; omit to serve plain HTTP behind a TLS proxy).
+tls_cert_file: /etc/gocd-mcp/certs/tls.crt
+tls_key_file: /etc/gocd-mcp/certs/tls.key
+
+mcp_endpoint_path: /mcp
+gocd_request_timeout: 30s
+token_cache_ttl: 60s
+
+# readonly | actions | full
+toolset: full
+
+# debug | info | warn | error
+log_level: info
+
+# Log destination. Empty/unset -> stderr. Set a path to append JSON logs to a file
+# (created if missing); rotate it externally (e.g. logrotate).
+# log_file: /var/log/gocd-mcp/gocd-mcp.log

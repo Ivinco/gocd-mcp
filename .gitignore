@@ -1,0 +1,22 @@
+# Local design/status notes — not part of the repo
+status/
+
+# Build output
+/gocd-mcp
+/dist/
+*.exe
+
+# Test/coverage artifacts
+*.out
+coverage.*
+
+# Local env / secrets
+.env
+*.local
+# Real config (may hold environment-specific values); the sample is committed.
+/config.yaml
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
