@@ -72,7 +72,7 @@ for user confirmation before running them.
 | `get_job_console_log` | all | read | Console log of a job run (last `tail_lines`, default 200) |
 | `list_agents` | all | read | Build agents and their config/runtime state |
 | `get_pipeline_config` | all | read | Full pipeline config + ETag (needed to update) |
-| `trigger_pipeline` | actions, full | action | Schedule a pipeline run |
+| `trigger_pipeline` | actions, full | action | Schedule a pipeline run; confirms a new instance materialized (bounded wait) rather than trusting GoCD's async accept |
 | `pause_pipeline` | actions, full | action | Pause a pipeline (reason required) |
 | `unpause_pipeline` | actions, full | action | Resume a paused pipeline |
 | `cancel_stage` | actions, full | action | Cancel a running stage |

@@ -5,14 +5,24 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/ivinco/gocd-mcp/internal/gocd"
 )
+
+// noSleep replaces the real poll wait so trigger tests run without delay.
+func noSleep(context.Context, time.Duration) error { return nil }
 
 // fakeClient is a programmable domain.Client for unit tests.
 type fakeClient struct {
 	dashboard []gocd.PipelineSummary
 	dashErr   error
+
+	// schedule/verify controls
+	schedErr error // returned by SchedulePipeline
+	histErr  error // returned by PipelineHistory
+	counters []int // successive latest counters returned by PipelineHistory (last value repeats)
+	histIdx  int
 
 	// recorded action calls
 	calls []string
@@ -25,7 +35,18 @@ func (f *fakeClient) PipelineStatus(context.Context, string) (*gocd.PipelineStat
 	return &gocd.PipelineStatus{}, nil
 }
 func (f *fakeClient) PipelineHistory(context.Context, string, int) ([]gocd.HistoryItem, error) {
-	return nil, nil
+	if f.histErr != nil {
+		return nil, f.histErr
+	}
+	if len(f.counters) == 0 {
+		return nil, nil
+	}
+	i := f.histIdx
+	if i >= len(f.counters) {
+		i = len(f.counters) - 1
+	}
+	f.histIdx++
+	return []gocd.HistoryItem{{Counter: f.counters[i]}}, nil
 }
 func (f *fakeClient) ListAgents(context.Context) ([]gocd.Agent, error) { return nil, nil }
 func (f *fakeClient) PipelineConfig(context.Context, string) (*gocd.PipelineConfig, error) {
@@ -43,7 +64,7 @@ func (f *fakeClient) DeletePipeline(_ context.Context, name string) error {
 }
 func (f *fakeClient) SchedulePipeline(_ context.Context, name string) error {
 	f.calls = append(f.calls, "schedule:"+name)
-	return nil
+	return f.schedErr
 }
 func (f *fakeClient) PausePipeline(_ context.Context, name, cause string) error {
 	f.calls = append(f.calls, "pause:"+name+":"+cause)
@@ -210,13 +231,85 @@ func TestCreatePipeline_WrapsBody(t *testing.T) {
 	}
 }
 
+func TestTriggerPipeline_ConfirmsNewInstance(t *testing.T) {
+	f := &fakeClient{counters: []int{1, 1, 2}} // baseline 1; instance #2 appears on the 2nd poll
+	svc := NewService(f)
+	svc.sleep = noSleep
+
+	res, err := svc.TriggerPipeline(context.Background(), "p")
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	if !res.Scheduled || res.Counter != 2 {
+		t.Fatalf("res = %+v, want {Scheduled:true Counter:2}", res)
+	}
+}
+
+func TestTriggerPipeline_AcceptedButNotConfirmed(t *testing.T) {
+	f := &fakeClient{counters: []int{1}} // counter never advances past baseline
+	svc := NewService(f)
+	svc.sleep = noSleep
+
+	res, err := svc.TriggerPipeline(context.Background(), "p")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Scheduled {
+		t.Fatalf("res = %+v, want Scheduled:false (no instance materialized)", res)
+	}
+}
+
+func TestTriggerPipeline_ConflictButMaterializes(t *testing.T) {
+	// GoCD rejects the POST with a conflict, but the run still materializes: we must
+	// confirm success from the counter, not treat the 409 as a failure.
+	f := &fakeClient{schedErr: gocd.ErrConflict, counters: []int{0, 1}}
+	svc := NewService(f)
+	svc.sleep = noSleep
+
+	res, err := svc.TriggerPipeline(context.Background(), "p")
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	if !res.Scheduled || res.Counter != 1 {
+		t.Fatalf("res = %+v, want {Scheduled:true Counter:1}", res)
+	}
+}
+
+func TestTriggerPipeline_ConflictNoInstance(t *testing.T) {
+	// A 409 with no new instance is NOT an error: GoCD may still schedule it, so we
+	// report unconfirmed and let the caller verify rather than risk a double-run.
+	f := &fakeClient{schedErr: gocd.ErrConflict, counters: []int{5}} // conflict and nothing new
+	svc := NewService(f)
+	svc.sleep = noSleep
+
+	res, err := svc.TriggerPipeline(context.Background(), "p")
+	if err != nil {
+		t.Fatalf("409 must not be an error, got %v", err)
+	}
+	if res.Scheduled {
+		t.Fatalf("res = %+v, want Scheduled:false (unconfirmed)", res)
+	}
+}
+
+func TestTriggerPipeline_HardScheduleErrorPropagates(t *testing.T) {
+	sentinel := errors.New("boom")
+	f := &fakeClient{schedErr: sentinel, counters: []int{1}}
+	svc := NewService(f)
+	svc.sleep = noSleep
+
+	if _, err := svc.TriggerPipeline(context.Background(), "p"); !errors.Is(err, sentinel) {
+		t.Fatalf("expected propagated schedule error, got %v", err)
+	}
+}
+
 func TestActionHappyPathReachesClient(t *testing.T) {
 	ctx := context.Background()
-	f := &fakeClient{}
+	f := &fakeClient{counters: []int{0, 1}} // baseline 0, then a new instance appears
 	svc := NewService(f)
+	svc.sleep = noSleep
 
-	if err := svc.TriggerPipeline(ctx, "p"); err != nil {
-		t.Fatalf("trigger: %v", err)
+	if res, err := svc.TriggerPipeline(ctx, "p"); err != nil || !res.Scheduled {
+		t.Fatalf("trigger: res=%+v err=%v", res, err)
 	}
 	if err := svc.PausePipeline(ctx, "p", "maint"); err != nil {
 		t.Fatalf("pause: %v", err)

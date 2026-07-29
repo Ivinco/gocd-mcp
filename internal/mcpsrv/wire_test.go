@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +28,7 @@ const goodToken = "goodtoken"
 // fakeGoCD stands in for the GoCD server: it accepts goodToken at current_user.
 func fakeGoCD(t *testing.T) *httptest.Server {
 	t.Helper()
+	var triggered atomic.Bool // flips once pipeline "tp" is scheduled, so history advances
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+goodToken {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -42,6 +45,17 @@ func fakeGoCD(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusOK)
 		case "/go/api/pipelines/denied/pause":
 			w.WriteHeader(http.StatusForbidden) // simulate GoCD RBAC denial
+		case "/go/api/pipelines/tp/schedule":
+			triggered.Store(true)
+			w.WriteHeader(http.StatusAccepted) // GoCD accepts asynchronously (202)
+		case "/go/api/pipelines/tp/history":
+			// A new instance (#2) materializes only after the schedule POST.
+			counter := 1
+			if triggered.Load() {
+				counter = 2
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, fmt.Sprintf(`{"pipelines":[{"counter":%d,"label":"%d","stages":[]}]}`, counter, counter))
 		case "/go/api/admin/pipelines/stale":
 			w.WriteHeader(http.StatusPreconditionFailed) // simulate ETag conflict
 		default:
@@ -241,6 +255,44 @@ func TestPause_EndToEnd_Audit(t *testing.T) {
 	}
 	if strings.Contains(logs, goodToken) {
 		t.Fatalf("audit log leaked the token")
+	}
+}
+
+func TestTrigger_EndToEnd_ConfirmsInstance(t *testing.T) {
+	gocd := fakeGoCD(t)
+	defer gocd.Close()
+	ts := stack(t, gocd.URL)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sess, err := connect(ctx, ts.URL+"/mcp", goodToken)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer sess.Close()
+
+	res, err := sess.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "trigger_pipeline",
+		Arguments: map[string]any{"name": "tp"},
+	})
+	if err != nil {
+		t.Fatalf("trigger call: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("trigger returned tool error: %+v", res.Content)
+	}
+
+	var out struct {
+		OK     bool   `json:"ok"`
+		Detail string `json:"detail"`
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode output %q: %v", raw, err)
+	}
+	if !out.OK || !strings.Contains(out.Detail, "instance #2") {
+		t.Fatalf("trigger result = %+v, want ok with confirmed instance #2", out)
 	}
 }
 

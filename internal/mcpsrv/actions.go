@@ -2,6 +2,7 @@ package mcpsrv
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -63,10 +64,14 @@ func registerActions(s *mcp.Server, cfg *config.Config, log *slog.Logger) {
 			return nil, actionResult{}, err
 		}
 		audit(ctx, log, "trigger_pipeline", in.Name)
-		if err := svc.TriggerPipeline(ctx, in.Name); err != nil {
+		res, err := svc.TriggerPipeline(ctx, in.Name)
+		if err != nil {
 			return toolError(err), actionResult{}, nil
 		}
-		return nil, actionResult{OK: true, Detail: "pipeline scheduled"}, nil
+		if !res.Scheduled {
+			return nil, actionResult{OK: false, Detail: "schedule request was accepted (or GoCD reported a conflict) but no new instance was confirmed within the wait window; GoCD may still schedule it, so check pipeline history before retrying — a blind retry can double-run the pipeline"}, nil
+		}
+		return nil, actionResult{OK: true, Detail: fmt.Sprintf("scheduled, instance #%d", res.Counter)}, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{

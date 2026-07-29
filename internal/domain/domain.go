@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ivinco/gocd-mcp/internal/gocd"
 )
@@ -42,11 +43,25 @@ type Client interface {
 // Service exposes GoCD operations to the MCP layer.
 type Service struct {
 	c Client
+	// sleep waits for d or until ctx is done; injectable so tests need not sleep.
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 // NewService builds a Service over the given GoCD client.
 func NewService(c Client) *Service {
-	return &Service{c: c}
+	return &Service{c: c, sleep: ctxSleep}
+}
+
+// ctxSleep blocks for d unless ctx is cancelled first.
+func ctxSleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // ListPipelines returns dashboard pipelines, optionally filtered to one group.

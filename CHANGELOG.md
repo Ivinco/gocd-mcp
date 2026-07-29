@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `trigger_pipeline` no longer reports success on GoCD's asynchronous `202 Accepted`
+  alone. It now watches the pipeline's run counter and returns success only once a new
+  instance has actually materialized (bounded wait); if none appears in the window it
+  returns an unconfirmed result instead of a false positive. Fixes silent failures on
+  concurrent triggers (IV-18871, #1).
+- A scheduling conflict (`409`) from `trigger_pipeline` is no longer surfaced as an error.
+  GoCD can answer `409` and still schedule the run asynchronously, so failing the call
+  produced a false negative — and advising a retry risked double-running the pipeline. A
+  conflict is now folded into the same confirmation wait as a `202`: if no new instance is
+  confirmed, the tool returns an unconfirmed result telling the caller to check history
+  before retrying, never a hard error.
+
 ## [1.0.0] - 2026-07-13
 
 First public release. An MCP server for GoCD over Streamable HTTP (MCP `2025-11-25`),
