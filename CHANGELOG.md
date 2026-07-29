@@ -6,13 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-29
+
 ### Fixed
 
 - `trigger_pipeline` no longer reports success on GoCD's asynchronous `202 Accepted`
   alone. It now watches the pipeline's run counter and returns success only once a new
   instance has actually materialized (bounded wait); if none appears in the window it
   returns an unconfirmed result instead of a false positive. Fixes silent failures on
-  concurrent triggers (IV-18871, #1).
+  concurrent triggers (#1).
 - A scheduling conflict (`409`) from `trigger_pipeline` is no longer surfaced as an error.
   GoCD can answer `409` and still schedule the run asynchronously, so failing the call
   produced a false negative — and advising a retry risked double-running the pipeline. A
@@ -75,4 +77,5 @@ authenticated per-user with GoCD Personal Access Tokens.
 - No retries to GoCD — transient failures surface as tool errors, and the agent may retry.
 - HTTP transport only; stdio is not supported yet.
 
+[1.0.1]: https://github.com/ivinco/gocd-mcp/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/ivinco/gocd-mcp/releases/tag/v1.0.0

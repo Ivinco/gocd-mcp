@@ -12,7 +12,7 @@ import (
 )
 
 // Version is the server implementation version reported to clients.
-const Version = "1.0.0"
+const Version = "1.0.1"
 
 // New builds a configured MCP server. The toolset registered depends on cfg.Toolset.
 // log is used for the audit trail of mutating actions.
