@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-07-30
+
 ### Fixed
 
 - `trigger_pipeline` no longer returns a hard error when the schedule request has
@@ -94,5 +96,6 @@ authenticated per-user with GoCD Personal Access Tokens.
 - No retries to GoCD — transient failures surface as tool errors, and the agent may retry.
 - HTTP transport only; stdio is not supported yet.
 
+[1.0.2]: https://github.com/ivinco/gocd-mcp/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/ivinco/gocd-mcp/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/ivinco/gocd-mcp/releases/tag/v1.0.0
