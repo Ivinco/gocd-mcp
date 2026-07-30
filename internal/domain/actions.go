@@ -36,8 +36,10 @@ const (
 // false negative (and any "retry" advice risks double-running the pipeline). A conflict
 // is therefore folded into the same confirmation wait as a 202; if the counter never
 // advances we return an unconfirmed result (Scheduled=false, nil error), leaving the
-// caller to verify rather than blindly retry. Only genuine non-conflict failures
-// (auth, not-found, network) are returned as errors, immediately.
+// caller to verify rather than blindly retry. Errors are returned only while nothing
+// has been scheduled yet (validation, baseline read, non-conflict POST failures);
+// once the request is accepted, confirmation failures also degrade to unconfirmed,
+// for the same double-run reason.
 func (s *Service) TriggerPipeline(ctx context.Context, name string) (TriggerResult, error) {
 	if err := validatePipelineName(name); err != nil {
 		return TriggerResult{}, err
@@ -52,13 +54,17 @@ func (s *Service) TriggerPipeline(ctx context.Context, name string) (TriggerResu
 		return TriggerResult{}, err
 	}
 
+	// From here on the schedule request has been accepted, so a hard error would
+	// invite the caller to retry — and a retry after an accepted schedule can
+	// double-run the pipeline. Every confirmation failure below (cancelled request,
+	// history read error) therefore degrades to the unconfirmed result instead.
 	for range scheduleWaitAttempts {
 		if err := s.sleep(ctx, scheduleWaitInterval); err != nil {
-			return TriggerResult{}, err
+			return TriggerResult{Scheduled: false}, nil
 		}
 		cur, err := s.latestCounter(ctx, name)
 		if err != nil {
-			return TriggerResult{}, err
+			return TriggerResult{Scheduled: false}, nil
 		}
 		if cur > base {
 			return TriggerResult{Scheduled: true, Counter: cur}, nil
