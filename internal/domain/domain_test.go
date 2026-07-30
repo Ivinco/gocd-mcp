@@ -19,10 +19,12 @@ type fakeClient struct {
 	dashErr   error
 
 	// schedule/verify controls
-	schedErr error // returned by SchedulePipeline
-	histErr  error // returned by PipelineHistory
-	counters []int // successive latest counters returned by PipelineHistory (last value repeats)
-	histIdx  int
+	schedErr      error // returned by SchedulePipeline
+	histErr       error // returned by PipelineHistory
+	histErrOnCall int   // 1-based call number histErr fires from; 0 = every call
+	histCalls     int
+	counters      []int // successive latest counters returned by PipelineHistory (last value repeats)
+	histIdx       int
 
 	// recorded action calls
 	calls []string
@@ -35,7 +37,8 @@ func (f *fakeClient) PipelineStatus(context.Context, string) (*gocd.PipelineStat
 	return &gocd.PipelineStatus{}, nil
 }
 func (f *fakeClient) PipelineHistory(context.Context, string, int) ([]gocd.HistoryItem, error) {
-	if f.histErr != nil {
+	f.histCalls++
+	if f.histErr != nil && (f.histErrOnCall == 0 || f.histCalls >= f.histErrOnCall) {
 		return nil, f.histErr
 	}
 	if len(f.counters) == 0 {
@@ -288,6 +291,55 @@ func TestTriggerPipeline_ConflictNoInstance(t *testing.T) {
 	}
 	if res.Scheduled {
 		t.Fatalf("res = %+v, want Scheduled:false (unconfirmed)", res)
+	}
+}
+
+func TestTriggerPipeline_PollFailureDegradesToUnconfirmed(t *testing.T) {
+	// The schedule was accepted; a history failure during confirmation must NOT become
+	// a tool error (an error invites a retry, and a retry can double-run the pipeline).
+	sentinel := errors.New("gocd went away")
+	f := &fakeClient{counters: []int{3}, histErr: sentinel, histErrOnCall: 2} // baseline ok, polls fail
+	svc := NewService(f)
+	svc.sleep = noSleep
+
+	res, err := svc.TriggerPipeline(context.Background(), "p")
+	if err != nil {
+		t.Fatalf("post-accept poll failure must degrade to unconfirmed, got error %v", err)
+	}
+	if res.Scheduled {
+		t.Fatalf("res = %+v, want Scheduled:false", res)
+	}
+}
+
+func TestTriggerPipeline_CancelDuringWaitDegradesToUnconfirmed(t *testing.T) {
+	// A cancelled request (client disconnect / MCP timeout) after the schedule was
+	// accepted must also degrade to unconfirmed, not to an error.
+	f := &fakeClient{counters: []int{3}}
+	svc := NewService(f)
+	svc.sleep = func(context.Context, time.Duration) error { return context.Canceled }
+
+	res, err := svc.TriggerPipeline(context.Background(), "p")
+	if err != nil {
+		t.Fatalf("cancel during wait must degrade to unconfirmed, got error %v", err)
+	}
+	if res.Scheduled {
+		t.Fatalf("res = %+v, want Scheduled:false", res)
+	}
+}
+
+func TestTriggerPipeline_BaselineErrorStillFails(t *testing.T) {
+	// Before the schedule request nothing has been triggered, so a baseline history
+	// failure is still a genuine error.
+	sentinel := errors.New("boom")
+	f := &fakeClient{histErr: sentinel} // fails from the first (baseline) call
+	svc := NewService(f)
+	svc.sleep = noSleep
+
+	if _, err := svc.TriggerPipeline(context.Background(), "p"); !errors.Is(err, sentinel) {
+		t.Fatalf("expected baseline error to propagate, got %v", err)
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("SchedulePipeline must not be called after a failed baseline read: %v", f.calls)
 	}
 }
 

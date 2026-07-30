@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- `trigger_pipeline` no longer returns a hard error when the schedule request has
+  already been accepted but the confirmation poll fails (history read error, cancelled
+  request). An error at that point invites a retry, and a retry after an accepted
+  schedule can double-run the pipeline — such failures now degrade to the unconfirmed
+  result instead. Errors are still returned for failures before anything is scheduled
+  (validation, baseline read, non-conflict schedule failures).
+
+### Known gaps
+
+- Run confirmation is counter-based and does not attribute the new instance to this
+  specific trigger: a concurrent run of the same pipeline started by another source
+  within the wait window can be reported as this call's instance. Proper instance
+  attribution is planned for a future release.
+
 ## [1.0.1] - 2026-07-29
 
 ### Fixed
