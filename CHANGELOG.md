@@ -20,7 +20,8 @@ All notable changes to this project are documented here. The format is based on
 - Run confirmation is counter-based and does not attribute the new instance to this
   specific trigger: a concurrent run of the same pipeline started by another source
   within the wait window can be reported as this call's instance. Proper instance
-  attribution is planned for a future release.
+  attribution is tracked in
+  [#3](https://github.com/ivinco/gocd-mcp/issues/3).
 
 ## [1.0.1] - 2026-07-29
 
