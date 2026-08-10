@@ -6,13 +6,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `get_pipeline_history` is now cursor-paginated and the `offset` input
+  is gone. The old parameter was passed through to GoCD, but the current history API
+  (verified on GoCD 25.4.0) silently ignores it — every call returned the first page
+  regardless. That API paginates by an opaque cursor, so the tool now follows suit:
+  the response carries `next_after`, and passing it back as `after` fetches the next
+  (older) page. Requests that still send `offset` (even `offset: 0`) are rejected by
+  the input schema instead of being silently served the first page. MCP clients
+  discover tool schemas at session start, so only hard-coded callers are affected.
+
 ### Fixed
 
-- `get_pipeline_history` pagination actually works now. The `offset` parameter was
-  passed through to GoCD, but the current history API (verified on GoCD 25.4.0)
-  ignores it — every call silently returned the first page. That API is cursor-based,
-  so the tool now follows suit: the response carries an opaque `next_after` cursor,
-  and passing it back as `after` fetches the next (older) page; `offset` is gone.
 - `trigger_pipeline` now attributes the confirmed instance to the caller instead of
   trusting counter growth alone (#3): confirmation requires a new run that is *forced*
   and *approved by the calling user* in GoCD's build cause. A timer trigger, a material
