@@ -67,12 +67,12 @@ for user confirmation before running them.
 | `whoami` | all | read | Authenticated GoCD login (verifies the token) |
 | `list_pipelines` | all | read | Dashboard pipelines with latest run status, pause/lock state (optional group filter) |
 | `get_pipeline_status` | all | read | Pause / lock / schedulable state of a pipeline |
-| `get_pipeline_history` | all | read | Past runs (paginated via `offset`) with stage statuses |
+| `get_pipeline_history` | all | read | Past runs (paginated via `offset`) with stage statuses and who triggered each run |
 | `get_pipeline_instance` | all | read | One run's detail incl. per-stage and per-job state/result |
 | `get_job_console_log` | all | read | Console log of a job run (last `tail_lines`, default 200) |
 | `list_agents` | all | read | Build agents and their config/runtime state |
 | `get_pipeline_config` | all | read | Full pipeline config + ETag (needed to update) |
-| `trigger_pipeline` | actions, full | action | Schedule a pipeline run; confirms a new instance materialized (bounded wait) rather than trusting GoCD's async accept. Once the request is accepted, any confirmation failure yields an unconfirmed `ok:false` result — never an error — so callers aren't tempted into a retry that could double-run the pipeline |
+| `trigger_pipeline` | actions, full | action | Schedule a pipeline run; confirms a new instance attributed to this trigger — forced by the calling user — materialized (bounded wait) rather than trusting GoCD's async accept, so a timer, material change or another user's run inside the window is not mistaken for yours (two concurrent triggers by the *same* user remain indistinguishable). Once the request is accepted, any confirmation failure yields an unconfirmed `ok:false` result — never an error — so callers aren't tempted into a retry that could double-run the pipeline |
 | `pause_pipeline` | actions, full | action | Pause a pipeline (reason required) |
 | `unpause_pipeline` | actions, full | action | Resume a paused pipeline |
 | `cancel_stage` | actions, full | action | Cancel a running stage |
@@ -406,7 +406,7 @@ offline (a fake GoCD via `httptest`); no live GoCD instance is required.
 | `401 Unauthorized` on `/mcp` | Missing/invalid `Authorization: Bearer <PAT>`, or GoCD rejected the token |
 | Tool error "your GoCD user lacks permission" | The user's GoCD RBAC does not allow the operation |
 | Tool error "version conflict (ETag mismatch)" | Config changed since you read it — re-run `get_pipeline_config` and retry |
-| `trigger_pipeline` returns `ok:false` (unconfirmed) | The schedule request was accepted but no new run was confirmed within the wait window — GoCD may still schedule it. Check the pipeline history before retrying; a blind retry can double-run the pipeline |
+| `trigger_pipeline` returns `ok:false` (unconfirmed) | The schedule request was accepted but no new run attributed to your trigger was confirmed within the wait window — GoCD may still schedule it. Check the pipeline history before retrying; a blind retry can double-run the pipeline |
 | `/readyz` returns 503 | GoCD is unreachable from the server (check `GOCD_BASE_URL` / network) |
 | A tool isn't listed | It's gated by `TOOLSET` — raise the tier (`actions` / `full`) |
 | `GOCD_BASE_URL is required` on startup | The base URL has no default — set it in the config file or the environment |

@@ -131,7 +131,7 @@ func registerReadOnly(s *mcp.Server, cfg *config.Config) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_pipeline_history",
-		Description: "Get past runs of a GoCD pipeline (newest first), with stage statuses. Supports pagination via offset.",
+		Description: "Get past runs of a GoCD pipeline (newest first), with stage statuses and who triggered each run (build cause). Supports pagination via offset.",
 		Annotations: readOnly(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in historyInput) (*mcp.CallToolResult, historyOutput, error) {
 		svc, err := serviceFor(ctx, cfg)

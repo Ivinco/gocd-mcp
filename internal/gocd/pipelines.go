@@ -119,7 +119,11 @@ type historyResp struct {
 		Label         string `json:"label"`
 		ScheduledDate int64  `json:"scheduled_date"`
 		Comment       string `json:"comment"`
-		Stages        []struct {
+		BuildCause    struct {
+			Approver      string `json:"approver"`
+			TriggerForced bool   `json:"trigger_forced"`
+		} `json:"build_cause"`
+		Stages []struct {
 			Name   string `json:"name"`
 			Status string `json:"status"`
 		} `json:"stages"`
@@ -141,7 +145,14 @@ func (c *Client) PipelineHistory(ctx context.Context, name string, offset int) (
 	}
 	out := make([]HistoryItem, 0, len(resp.Pipelines))
 	for _, p := range resp.Pipelines {
-		item := HistoryItem{Counter: p.Counter, Label: p.Label, ScheduledDate: p.ScheduledDate, Comment: p.Comment}
+		item := HistoryItem{
+			Counter:       p.Counter,
+			Label:         p.Label,
+			ScheduledDate: p.ScheduledDate,
+			Comment:       p.Comment,
+			TriggeredBy:   p.BuildCause.Approver,
+			TriggerForced: p.BuildCause.TriggerForced,
+		}
 		for _, st := range p.Stages {
 			item.Stages = append(item.Stages, StageStatus{Name: st.Name, Status: st.Status})
 		}

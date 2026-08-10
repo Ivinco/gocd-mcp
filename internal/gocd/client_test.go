@@ -35,7 +35,7 @@ func newServer(t *testing.T) *httptest.Server {
 		_, _ = w.Write([]byte(`{"paused":true,"paused_cause":"x","paused_by":"u","locked":false,"schedulable":true}`))
 	})
 	mux.HandleFunc("/go/api/pipelines/p1/history", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"pipelines":[{"counter":5,"label":"5","scheduled_date":123,"comment":"c","stages":[{"name":"build","status":"Passed"}]}]}`))
+		_, _ = w.Write([]byte(`{"pipelines":[{"counter":5,"label":"5","scheduled_date":123,"comment":"c","build_cause":{"approver":"u1","trigger_forced":true,"trigger_message":"Forced by u1"},"stages":[{"name":"build","status":"Passed"}]}]}`))
 	})
 	mux.HandleFunc("/go/api/agents", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"_embedded":{"agents":[{"uuid":"u1","hostname":"h","ip_address":"1.2.3.4","agent_config_state":"Enabled","agent_state":"Idle","build_state":"Idle","operating_system":"Linux","resources":["docker"],"environments":[{"name":"E1"},{"name":"E2"}]}]}}`))
@@ -109,6 +109,9 @@ func TestPipelineHistory(t *testing.T) {
 	}
 	if len(runs) != 1 || runs[0].Counter != 5 || runs[0].ScheduledDate != 123 || runs[0].Comment != "c" {
 		t.Fatalf("history mapped wrong: %+v", runs)
+	}
+	if runs[0].TriggeredBy != "u1" || !runs[0].TriggerForced {
+		t.Fatalf("build cause mapped wrong: %+v", runs[0])
 	}
 }
 

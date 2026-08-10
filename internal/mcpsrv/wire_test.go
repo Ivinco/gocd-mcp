@@ -49,13 +49,14 @@ func fakeGoCD(t *testing.T) *httptest.Server {
 			triggered.Store(true)
 			w.WriteHeader(http.StatusAccepted) // GoCD accepts asynchronously (202)
 		case "/go/api/pipelines/tp/history":
-			// A new instance (#2) materializes only after the schedule POST.
+			// A new instance (#2), forced by the authenticated user, materializes only
+			// after the schedule POST — confirmation requires that attribution.
 			counter := 1
 			if triggered.Load() {
 				counter = 2
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, fmt.Sprintf(`{"pipelines":[{"counter":%d,"label":"%d","stages":[]}]}`, counter, counter))
+			_, _ = io.WriteString(w, fmt.Sprintf(`{"pipelines":[{"counter":%d,"label":"%d","build_cause":{"approver":"alice","trigger_forced":true},"stages":[]}]}`, counter, counter))
 		case "/go/api/admin/pipelines/stale":
 			w.WriteHeader(http.StatusPreconditionFailed) // simulate ETag conflict
 		default:
@@ -293,6 +294,50 @@ func TestTrigger_EndToEnd_ConfirmsInstance(t *testing.T) {
 	}
 	if !out.OK || !strings.Contains(out.Detail, "instance #2") {
 		t.Fatalf("trigger result = %+v, want ok with confirmed instance #2", out)
+	}
+}
+
+func TestPipelineHistory_EndToEnd_ExposesBuildCause(t *testing.T) {
+	// The CHANGELOG promises triggered_by/trigger_forced in history output; the JSON
+	// tags on gocd.HistoryItem are the only thing producing them, so pin the
+	// serialized field names end to end.
+	gocd := fakeGoCD(t)
+	defer gocd.Close()
+	ts := stack(t, gocd.URL)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sess, err := connect(ctx, ts.URL+"/mcp", goodToken)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer sess.Close()
+
+	res, err := sess.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "get_pipeline_history",
+		Arguments: map[string]any{"name": "tp"},
+	})
+	if err != nil {
+		t.Fatalf("history call: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("history returned tool error: %+v", res.Content)
+	}
+
+	var out struct {
+		Runs []struct {
+			Counter       int    `json:"counter"`
+			TriggeredBy   string `json:"triggered_by"`
+			TriggerForced bool   `json:"trigger_forced"`
+		} `json:"runs"`
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode output %q: %v", raw, err)
+	}
+	if len(out.Runs) != 1 || out.Runs[0].TriggeredBy != "alice" || !out.Runs[0].TriggerForced {
+		t.Fatalf("runs = %+v, want one run triggered_by alice with trigger_forced true", out.Runs)
 	}
 }
 

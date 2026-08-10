@@ -6,6 +6,30 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- `trigger_pipeline` now attributes the confirmed instance to the caller instead of
+  trusting counter growth alone (#3): confirmation requires a new run that is *forced*
+  and *approved by the calling user* in GoCD's build cause. A timer trigger, a material
+  change or another user's run of the same pipeline inside the wait window is no longer
+  reported as this call's instance.
+
+### Added
+
+- `get_pipeline_history` (and the history resource) now include each run's build cause:
+  `triggered_by` (the approver — a user login, or `timer` / `changes` for automatic
+  runs) and `trigger_forced`.
+
+### Known gaps
+
+- Two concurrent forced triggers by the *same* user within the wait window remain
+  indistinguishable — GoCD records only the approver in the build cause, so both calls
+  may report the same (earliest) new instance. The most likely way to hit this is
+  retrying after an unconfirmed result: if the first attempt's run materializes late,
+  the retry may report that earlier instance while a second run also exists — another
+  reason to check history instead of retrying blindly. This residual ambiguity is
+  accepted; see the discussion in [#3](https://github.com/ivinco/gocd-mcp/issues/3).
+
 ## [1.0.2] - 2026-07-30
 
 ### Fixed
