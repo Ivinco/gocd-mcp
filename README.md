@@ -67,7 +67,7 @@ for user confirmation before running them.
 | `whoami` | all | read | Authenticated GoCD login (verifies the token) |
 | `list_pipelines` | all | read | Dashboard pipelines with latest run status, pause/lock state (optional group filter) |
 | `get_pipeline_status` | all | read | Pause / lock / schedulable state of a pipeline |
-| `get_pipeline_history` | all | read | Past runs (paginated via `offset`) with stage statuses and who triggered each run |
+| `get_pipeline_history` | all | read | Past runs with stage statuses and who triggered each run; cursor-paginated — pass the previous page's `next_after` as `after` for older runs |
 | `get_pipeline_instance` | all | read | One run's detail incl. per-stage and per-job state/result |
 | `get_job_console_log` | all | read | Console log of a job run (last `tail_lines`, default 200) |
 | `list_agents` | all | read | Build agents and their config/runtime state |

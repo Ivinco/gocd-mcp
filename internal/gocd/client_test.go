@@ -34,8 +34,14 @@ func newServer(t *testing.T) *httptest.Server {
 	mux.HandleFunc("/go/api/pipelines/p1/status", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"paused":true,"paused_cause":"x","paused_by":"u","locked":false,"schedulable":true}`))
 	})
-	mux.HandleFunc("/go/api/pipelines/p1/history", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"pipelines":[{"counter":5,"label":"5","scheduled_date":123,"comment":"c","build_cause":{"approver":"u1","trigger_forced":true,"trigger_message":"Forced by u1"},"stages":[{"name":"build","status":"Passed"}]}]}`))
+	mux.HandleFunc("/go/api/pipelines/p1/history", func(w http.ResponseWriter, r *http.Request) {
+		// Cursor pagination like GoCD's: the first page links to the next one; the
+		// page at cursor 77 is the last.
+		if r.URL.Query().Get("after") == "77" {
+			_, _ = w.Write([]byte(`{"pipelines":[{"counter":4,"label":"4","build_cause":{"approver":"timer","trigger_forced":false}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"_links":{"next":{"href":"http://gocd.example/go/api/pipelines/p1/history?after=77"}},"pipelines":[{"counter":5,"label":"5","scheduled_date":123,"comment":"c","build_cause":{"approver":"u1","trigger_forced":true,"trigger_message":"Forced by u1"},"stages":[{"name":"build","status":"Passed"}]}]}`))
 	})
 	mux.HandleFunc("/go/api/agents", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"_embedded":{"agents":[{"uuid":"u1","hostname":"h","ip_address":"1.2.3.4","agent_config_state":"Enabled","agent_state":"Idle","build_state":"Idle","operating_system":"Linux","resources":["docker"],"environments":[{"name":"E1"},{"name":"E2"}]}]}}`))
@@ -103,15 +109,32 @@ func TestPipelineStatus(t *testing.T) {
 func TestPipelineHistory(t *testing.T) {
 	srv := newServer(t)
 	defer srv.Close()
-	runs, err := newClient(srv.URL).PipelineHistory(context.Background(), "p1", 0)
+	c := newClient(srv.URL)
+
+	page, err := c.PipelineHistory(context.Background(), "p1", "")
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}
+	runs := page.Runs
 	if len(runs) != 1 || runs[0].Counter != 5 || runs[0].ScheduledDate != 123 || runs[0].Comment != "c" {
 		t.Fatalf("history mapped wrong: %+v", runs)
 	}
 	if runs[0].TriggeredBy != "u1" || !runs[0].TriggerForced {
 		t.Fatalf("build cause mapped wrong: %+v", runs[0])
+	}
+	if page.NextAfter != "77" {
+		t.Fatalf("NextAfter = %q, want 77 (from the _links.next href)", page.NextAfter)
+	}
+
+	next, err := c.PipelineHistory(context.Background(), "p1", page.NextAfter)
+	if err != nil {
+		t.Fatalf("next page: %v", err)
+	}
+	if len(next.Runs) != 1 || next.Runs[0].Counter != 4 || next.Runs[0].TriggeredBy != "timer" || next.Runs[0].TriggerForced {
+		t.Fatalf("next page mapped wrong: %+v", next.Runs)
+	}
+	if next.NextAfter != "" {
+		t.Fatalf("last page NextAfter = %q, want empty", next.NextAfter)
 	}
 }
 

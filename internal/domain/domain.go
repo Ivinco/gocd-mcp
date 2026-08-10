@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,7 +23,7 @@ var ErrInvalidArgument = errors.New("invalid argument")
 type Client interface {
 	Dashboard(ctx context.Context) ([]gocd.PipelineSummary, error)
 	PipelineStatus(ctx context.Context, name string) (*gocd.PipelineStatus, error)
-	PipelineHistory(ctx context.Context, name string, offset int) ([]gocd.HistoryItem, error)
+	PipelineHistory(ctx context.Context, name, after string) (*gocd.HistoryPage, error)
 	ListAgents(ctx context.Context) ([]gocd.Agent, error)
 	PipelineConfig(ctx context.Context, name string) (*gocd.PipelineConfig, error)
 	PipelineInstance(ctx context.Context, name string, counter int) (*gocd.PipelineInstance, error)
@@ -90,15 +91,20 @@ func (s *Service) PipelineStatus(ctx context.Context, name string) (*gocd.Pipeli
 	return s.c.PipelineStatus(ctx, name)
 }
 
-// PipelineHistory returns past runs of a pipeline.
-func (s *Service) PipelineHistory(ctx context.Context, name string, offset int) ([]gocd.HistoryItem, error) {
+// PipelineHistory returns one page of a pipeline's past runs. after is the opaque
+// cursor from the previous page's NextAfter; empty fetches the first (newest) page.
+func (s *Service) PipelineHistory(ctx context.Context, name, after string) (*gocd.HistoryPage, error) {
 	if err := validatePipelineName(name); err != nil {
 		return nil, err
 	}
-	if offset < 0 {
-		return nil, fmt.Errorf("%w: offset must be >= 0", ErrInvalidArgument)
+	// GoCD requires the cursor to be a positive integer; catch garbage before the
+	// round-trip so the caller gets a consistent invalid-argument error.
+	if after != "" {
+		if v, err := strconv.ParseUint(after, 10, 64); err != nil || v == 0 {
+			return nil, fmt.Errorf("%w: after must be a next_after cursor from a previous page", ErrInvalidArgument)
+		}
 	}
-	return s.c.PipelineHistory(ctx, name, offset)
+	return s.c.PipelineHistory(ctx, name, after)
 }
 
 // ListAgents returns all build agents.

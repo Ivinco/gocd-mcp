@@ -25,6 +25,8 @@ type fakeClient struct {
 	histCalls     int
 	hist          [][]gocd.HistoryItem // successive PipelineHistory responses (last one repeats)
 	histIdx       int
+	histAfters    []string // "after" cursor received by each PipelineHistory call
+	histNextAfter string   // NextAfter returned with every non-empty page
 
 	// recorded action calls
 	calls []string
@@ -36,20 +38,25 @@ func (f *fakeClient) Dashboard(context.Context) ([]gocd.PipelineSummary, error) 
 func (f *fakeClient) PipelineStatus(context.Context, string) (*gocd.PipelineStatus, error) {
 	return &gocd.PipelineStatus{}, nil
 }
-func (f *fakeClient) PipelineHistory(context.Context, string, int) ([]gocd.HistoryItem, error) {
+func (f *fakeClient) PipelineHistory(_ context.Context, _ string, after string) (*gocd.HistoryPage, error) {
 	f.histCalls++
+	f.histAfters = append(f.histAfters, after)
 	if f.histErr != nil && (f.histErrOnCall == 0 || f.histCalls >= f.histErrOnCall) {
 		return nil, f.histErr
 	}
 	if len(f.hist) == 0 {
-		return nil, nil
+		return &gocd.HistoryPage{}, nil
 	}
 	i := f.histIdx
 	if i >= len(f.hist) {
 		i = len(f.hist) - 1
 	}
 	f.histIdx++
-	return f.hist[i], nil
+	next := ""
+	if len(f.hist[i]) > 0 {
+		next = f.histNextAfter
+	}
+	return &gocd.HistoryPage{Runs: f.hist[i], NextAfter: next}, nil
 }
 
 // forcedRun is a history item for a manually/API-forced run, as GoCD records it.
@@ -150,10 +157,56 @@ func TestValidatePipelineName(t *testing.T) {
 	}
 }
 
-func TestPipelineHistory_NegativeOffset(t *testing.T) {
-	svc := NewService(&fakeClient{})
-	if _, err := svc.PipelineHistory(context.Background(), "p", -1); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("expected ErrInvalidArgument for negative offset, got %v", err)
+func TestPipelineHistory_CursorValidation(t *testing.T) {
+	f := &fakeClient{}
+	svc := NewService(f)
+
+	// GoCD requires the cursor to be a positive integer; garbage must be rejected
+	// before any round-trip. "+7" and unicode digits are real ParseUint boundaries,
+	// and the last value overflows uint64.
+	for _, after := range []string{"abc", "-5", "0", "12x", " 7", "+7", "١٢", "18446744073709551616"} {
+		if _, err := svc.PipelineHistory(context.Background(), "p", after); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("after %q: expected ErrInvalidArgument, got %v", after, err)
+		}
+	}
+	if f.histCalls != 0 {
+		t.Fatalf("invalid cursors must not reach the client, got %d calls", f.histCalls)
+	}
+
+	// The accept side of the boundary: leading zeros are a valid positive integer
+	// and must be forwarded verbatim, not normalized.
+	if _, err := svc.PipelineHistory(context.Background(), "p", "007"); err != nil {
+		t.Fatalf("after \"007\": %v", err)
+	}
+	if len(f.histAfters) != 1 || f.histAfters[0] != "007" {
+		t.Fatalf("cursor forwarded = %v, want [007]", f.histAfters)
+	}
+}
+
+func TestPipelineHistory_PassesCursorAndReturnsNext(t *testing.T) {
+	f := &fakeClient{
+		hist:          [][]gocd.HistoryItem{{forcedRun(5, "alice")}},
+		histNextAfter: "37957",
+	}
+	svc := NewService(f)
+
+	page, err := svc.PipelineHistory(context.Background(), "p", "12345")
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if len(f.histAfters) != 1 || f.histAfters[0] != "12345" {
+		t.Fatalf("cursor passed to client = %v, want [12345]", f.histAfters)
+	}
+	if page.NextAfter != "37957" {
+		t.Fatalf("NextAfter = %q, want 37957", page.NextAfter)
+	}
+
+	// Empty cursor (first page) is valid and passed through as-is.
+	if _, err := svc.PipelineHistory(context.Background(), "p", ""); err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if f.histAfters[1] != "" {
+		t.Fatalf("first-page cursor = %q, want empty", f.histAfters[1])
 	}
 }
 
@@ -254,6 +307,11 @@ func TestTriggerPipeline_ConfirmsNewInstance(t *testing.T) {
 	}
 	if !res.Scheduled || res.Counter != 2 {
 		t.Fatalf("res = %+v, want {Scheduled:true Counter:2}", res)
+	}
+	for i, after := range f.histAfters {
+		if after != "" {
+			t.Fatalf("trigger polling must always read the first history page, call %d used cursor %q", i+1, after)
+		}
 	}
 }
 

@@ -91,12 +91,12 @@ func (s *Service) TriggerPipeline(ctx context.Context, name, login string) (Trig
 // a forced run approved by login. When several qualify (concurrent triggers by the same
 // user), it returns the earliest, so repeated polls settle on the same instance.
 func (s *Service) newInstanceBy(ctx context.Context, name string, base int, login string) (int, bool, error) {
-	hist, err := s.c.PipelineHistory(ctx, name, 0)
+	page, err := s.c.PipelineHistory(ctx, name, "")
 	if err != nil {
 		return 0, false, err
 	}
 	found := 0
-	for _, h := range hist {
+	for _, h := range page.Runs {
 		if h.Counter > base && h.TriggerForced && h.TriggeredBy == login {
 			if found == 0 || h.Counter < found {
 				found = h.Counter
@@ -109,12 +109,12 @@ func (s *Service) newInstanceBy(ctx context.Context, name string, base int, logi
 // latestCounter returns the highest run counter in a pipeline's history, or 0 if it
 // has never run. Used as the baseline a new instance must exceed.
 func (s *Service) latestCounter(ctx context.Context, name string) (int, error) {
-	hist, err := s.c.PipelineHistory(ctx, name, 0)
+	page, err := s.c.PipelineHistory(ctx, name, "")
 	if err != nil {
 		return 0, err
 	}
 	max := 0
-	for _, h := range hist {
+	for _, h := range page.Runs {
 		if h.Counter > max {
 			max = h.Counter
 		}

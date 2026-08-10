@@ -114,6 +114,11 @@ func (c *Client) PipelineStatus(ctx context.Context, name string) (*PipelineStat
 // --- history ---
 
 type historyResp struct {
+	Links struct {
+		Next struct {
+			Href string `json:"href"`
+		} `json:"next"`
+	} `json:"_links"`
 	Pipelines []struct {
 		Counter       int    `json:"counter"`
 		Label         string `json:"label"`
@@ -130,15 +135,18 @@ type historyResp struct {
 	} `json:"pipelines"`
 }
 
-// PipelineHistory returns past runs of a pipeline, newest first, starting at offset.
-func (c *Client) PipelineHistory(ctx context.Context, name string, offset int) ([]HistoryItem, error) {
-	if offset < 0 {
-		offset = 0
+// PipelineHistory returns one page of a pipeline's past runs, newest first. GoCD
+// paginates this API by an opaque cursor: pass "" for the first page and the previous
+// page's NextAfter for the next one (GoCD ignores the legacy offset parameter).
+func (c *Client) PipelineHistory(ctx context.Context, name, after string) (*HistoryPage, error) {
+	path := "/go/api/pipelines/" + url.PathEscape(name) + "/history"
+	if after != "" {
+		path += "?after=" + url.QueryEscape(after)
 	}
 	var resp historyResp
 	if _, err := c.doJSON(ctx, request{
 		method: http.MethodGet,
-		path:   "/go/api/pipelines/" + url.PathEscape(name) + "/history?offset=" + strconv.Itoa(offset),
+		path:   path,
 		accept: acceptHistory,
 	}, &resp); err != nil {
 		return nil, err
@@ -158,7 +166,26 @@ func (c *Client) PipelineHistory(ctx context.Context, name string, offset int) (
 		}
 		out = append(out, item)
 	}
-	return out, nil
+	return &HistoryPage{Runs: out, NextAfter: nextAfterCursor(resp.Links.Next.Href)}, nil
+}
+
+// nextAfterCursor extracts the "after" cursor from the next-page link. An absent,
+// unparsable or cursor-less link means there are no further pages. The cursor must be
+// a positive integer (GoCD's format, which the server also enforces on input) — this
+// way we never hand out a cursor that a follow-up call would reject.
+func nextAfterCursor(href string) string {
+	if href == "" {
+		return ""
+	}
+	u, err := url.Parse(href)
+	if err != nil {
+		return ""
+	}
+	after := u.Query().Get("after")
+	if v, err := strconv.ParseUint(after, 10, 64); err != nil || v == 0 {
+		return ""
+	}
+	return after
 }
 
 // --- config ---

@@ -67,11 +67,12 @@ type instanceInput struct {
 }
 
 type historyInput struct {
-	Name   string `json:"name" jsonschema:"the GoCD pipeline name"`
-	Offset int    `json:"offset,omitempty" jsonschema:"pagination offset (number of runs to skip), default 0"`
+	Name  string `json:"name" jsonschema:"the GoCD pipeline name"`
+	After string `json:"after,omitempty" jsonschema:"opaque pagination cursor: the next_after value from the previous page; omit for the first (newest) page"`
 }
 type historyOutput struct {
-	Runs []gocd.HistoryItem `json:"runs"`
+	Runs      []gocd.HistoryItem `json:"runs"`
+	NextAfter string             `json:"next_after,omitempty" jsonschema:"opaque cursor for the next (older) page; pass it back as after to continue; absent on the last page"`
 }
 
 type agentsOutput struct {
@@ -131,18 +132,18 @@ func registerReadOnly(s *mcp.Server, cfg *config.Config) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_pipeline_history",
-		Description: "Get past runs of a GoCD pipeline (newest first), with stage statuses and who triggered each run (build cause). Supports pagination via offset.",
+		Description: "Get past runs of a GoCD pipeline (newest first), with stage statuses and who triggered each run (build cause). Paginated by cursor: pass the previous page's next_after as after to fetch older runs.",
 		Annotations: readOnly(),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in historyInput) (*mcp.CallToolResult, historyOutput, error) {
 		svc, err := serviceFor(ctx, cfg)
 		if err != nil {
 			return nil, historyOutput{}, err
 		}
-		runs, err := svc.PipelineHistory(ctx, in.Name, in.Offset)
+		page, err := svc.PipelineHistory(ctx, in.Name, in.After)
 		if err != nil {
 			return toolError(err), historyOutput{}, nil
 		}
-		return nil, historyOutput{Runs: runs}, nil
+		return nil, historyOutput{Runs: page.Runs, NextAfter: page.NextAfter}, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{

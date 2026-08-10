@@ -52,6 +52,14 @@ type HistoryItem struct {
 	Stages        []StageStatus `json:"stages,omitempty"`
 }
 
+// HistoryPage is one page of a pipeline's run history (newest first). NextAfter is
+// the opaque cursor for the next (older) page, empty when there are no more pages;
+// GoCD's history API paginates by cursor, not offset.
+type HistoryPage struct {
+	Runs      []HistoryItem `json:"runs"`
+	NextAfter string        `json:"next_after,omitempty"`
+}
+
 // Agent is a build agent and its state.
 type Agent struct {
 	UUID         string   `json:"uuid"`

@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- `get_pipeline_history` pagination actually works now. The `offset` parameter was
+  passed through to GoCD, but the current history API (verified on GoCD 25.4.0)
+  ignores it — every call silently returned the first page. That API is cursor-based,
+  so the tool now follows suit: the response carries an opaque `next_after` cursor,
+  and passing it back as `after` fetches the next (older) page; `offset` is gone.
 - `trigger_pipeline` now attributes the confirmed instance to the caller instead of
   trusting counter growth alone (#3): confirmation requires a new run that is *forced*
   and *approved by the calling user* in GoCD's build cause. A timer trigger, a material

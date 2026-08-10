@@ -49,14 +49,19 @@ func fakeGoCD(t *testing.T) *httptest.Server {
 			triggered.Store(true)
 			w.WriteHeader(http.StatusAccepted) // GoCD accepts asynchronously (202)
 		case "/go/api/pipelines/tp/history":
+			w.Header().Set("Content-Type", "application/json")
+			// Cursor pagination: the page at cursor 42 is the terminal (oldest) one.
+			if r.URL.Query().Get("after") == "42" {
+				_, _ = io.WriteString(w, `{"pipelines":[{"counter":1,"label":"1","build_cause":{"approver":"bob","trigger_forced":true},"stages":[]}]}`)
+				return
+			}
 			// A new instance (#2), forced by the authenticated user, materializes only
 			// after the schedule POST — confirmation requires that attribution.
 			counter := 1
 			if triggered.Load() {
 				counter = 2
 			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, fmt.Sprintf(`{"pipelines":[{"counter":%d,"label":"%d","build_cause":{"approver":"alice","trigger_forced":true},"stages":[]}]}`, counter, counter))
+			_, _ = io.WriteString(w, fmt.Sprintf(`{"_links":{"next":{"href":"http://gocd.example/go/api/pipelines/tp/history?after=42"}},"pipelines":[{"counter":%d,"label":"%d","build_cause":{"approver":"alice","trigger_forced":true},"stages":[]}]}`, counter, counter))
 		case "/go/api/admin/pipelines/stale":
 			w.WriteHeader(http.StatusPreconditionFailed) // simulate ETag conflict
 		default:
@@ -331,6 +336,7 @@ func TestPipelineHistory_EndToEnd_ExposesBuildCause(t *testing.T) {
 			TriggeredBy   string `json:"triggered_by"`
 			TriggerForced bool   `json:"trigger_forced"`
 		} `json:"runs"`
+		NextAfter string `json:"next_after"`
 	}
 	raw, _ := json.Marshal(res.StructuredContent)
 	if err := json.Unmarshal(raw, &out); err != nil {
@@ -338,6 +344,79 @@ func TestPipelineHistory_EndToEnd_ExposesBuildCause(t *testing.T) {
 	}
 	if len(out.Runs) != 1 || out.Runs[0].TriggeredBy != "alice" || !out.Runs[0].TriggerForced {
 		t.Fatalf("runs = %+v, want one run triggered_by alice with trigger_forced true", out.Runs)
+	}
+	if out.NextAfter != "42" {
+		t.Fatalf("next_after = %q, want 42 (pagination cursor from the fake's next link)", out.NextAfter)
+	}
+
+	// Passing the cursor back as `after` must reach GoCD's query string and fetch the
+	// older page — this is the tool-boundary round-trip that the old offset parameter
+	// silently failed.
+	res, err = sess.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "get_pipeline_history",
+		Arguments: map[string]any{"name": "tp", "after": out.NextAfter},
+	})
+	if err != nil {
+		t.Fatalf("history page 2 call: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("history page 2 returned tool error: %+v", res.Content)
+	}
+	raw, _ = json.Marshal(res.StructuredContent)
+	out.Runs, out.NextAfter = nil, ""
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode page 2 %q: %v", raw, err)
+	}
+	if len(out.Runs) != 1 || out.Runs[0].Counter != 1 || out.Runs[0].TriggeredBy != "bob" {
+		t.Fatalf("page 2 runs = %+v, want the terminal page (counter 1, triggered_by bob)", out.Runs)
+	}
+	if out.NextAfter != "" {
+		t.Fatalf("page 2 next_after = %q, want empty (last page)", out.NextAfter)
+	}
+
+	// The legacy offset parameter is gone from the schema; sending it must fail
+	// loudly, not silently return the first page as it did against real GoCD.
+	res, err = sess.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "get_pipeline_history",
+		Arguments: map[string]any{"name": "tp", "offset": 1},
+	})
+	if err == nil && !res.IsError {
+		t.Fatalf("legacy offset argument must not silently succeed")
+	}
+}
+
+func TestPipelineHistoryResource_EndToEnd(t *testing.T) {
+	// The history resource serves the first (newest) page as a bare runs array.
+	gocd := fakeGoCD(t)
+	defer gocd.Close()
+	ts := stack(t, gocd.URL)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sess, err := connect(ctx, ts.URL+"/mcp", goodToken)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer sess.Close()
+
+	res, err := sess.ReadResource(ctx, &mcp.ReadResourceParams{URI: "gocd://pipeline/tp/history"})
+	if err != nil {
+		t.Fatalf("read history resource: %v", err)
+	}
+	if len(res.Contents) != 1 || res.Contents[0].MIMEType != "application/json" {
+		t.Fatalf("contents = %+v, want one application/json entry", res.Contents)
+	}
+
+	var runs []struct {
+		Counter     int    `json:"counter"`
+		TriggeredBy string `json:"triggered_by"`
+	}
+	if err := json.Unmarshal([]byte(res.Contents[0].Text), &runs); err != nil {
+		t.Fatalf("decode resource %q: %v", res.Contents[0].Text, err)
+	}
+	if len(runs) != 1 || runs[0].Counter != 1 || runs[0].TriggeredBy != "alice" {
+		t.Fatalf("runs = %+v, want the first page (counter 1, triggered_by alice)", runs)
 	}
 }
 
