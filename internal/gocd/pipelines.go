@@ -3,6 +3,7 @@ package gocd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -166,26 +167,31 @@ func (c *Client) PipelineHistory(ctx context.Context, name, after string) (*Hist
 		}
 		out = append(out, item)
 	}
-	return &HistoryPage{Runs: out, NextAfter: nextAfterCursor(resp.Links.Next.Href)}, nil
+	next, err := nextAfterCursor(resp.Links.Next.Href)
+	if err != nil {
+		return nil, err
+	}
+	return &HistoryPage{Runs: out, NextAfter: next}, nil
 }
 
-// nextAfterCursor extracts the "after" cursor from the next-page link. An absent,
-// unparsable or cursor-less link means there are no further pages. The cursor must be
-// a positive integer (GoCD's format, which the server also enforces on input) — this
-// way we never hand out a cursor that a follow-up call would reject.
-func nextAfterCursor(href string) string {
+// nextAfterCursor extracts the "after" cursor from the next-page link. An absent link
+// means there are no further pages; a link we cannot extract a usable cursor from is
+// an error — treating it as the last page would silently truncate history for the
+// caller. The cursor must be a positive integer (GoCD's format, which the server also
+// enforces on input), so we never hand out a cursor a follow-up call would reject.
+func nextAfterCursor(href string) (string, error) {
 	if href == "" {
-		return ""
+		return "", nil
 	}
 	u, err := url.Parse(href)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("malformed next-page link %q: %w", href, err)
 	}
 	after := u.Query().Get("after")
 	if v, err := strconv.ParseUint(after, 10, 64); err != nil || v == 0 {
-		return ""
+		return "", fmt.Errorf("next-page link %q carries no usable after cursor", href)
 	}
-	return after
+	return after, nil
 }
 
 // --- config ---

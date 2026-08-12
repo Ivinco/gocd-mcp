@@ -90,6 +90,10 @@ func (s *Service) TriggerPipeline(ctx context.Context, name, login string) (Trig
 // newInstanceBy looks for a run created after base that is attributed to this trigger:
 // a forced run approved by login. When several qualify (concurrent triggers by the same
 // user), it returns the earliest, so repeated polls settle on the same instance.
+// Only the first history page is inspected: our run could only escape it if 10+ newer
+// runs of the same pipeline landed between two 500ms polls, which GoCD's multi-second
+// materialization latency makes unreachable in practice — and even then the outcome is
+// the safe unconfirmed result, so walking pages here isn't worth the complexity.
 func (s *Service) newInstanceBy(ctx context.Context, name string, base int, login string) (int, bool, error) {
 	page, err := s.c.PipelineHistory(ctx, name, "")
 	if err != nil {
