@@ -64,12 +64,18 @@ func registerActions(s *mcp.Server, cfg *config.Config, log *slog.Logger) {
 			return nil, actionResult{}, err
 		}
 		audit(ctx, log, "trigger_pipeline", in.Name)
-		res, err := svc.TriggerPipeline(ctx, in.Name)
+		// The principal's login is what GoCD records as the build-cause approver of
+		// a forced run; confirmation matches the new instance against it.
+		p, ok := auth.PrincipalFromContext(ctx)
+		if !ok {
+			return nil, actionResult{}, fmt.Errorf("no authenticated principal in context")
+		}
+		res, err := svc.TriggerPipeline(ctx, in.Name, p.Login)
 		if err != nil {
 			return toolError(err), actionResult{}, nil
 		}
 		if !res.Scheduled {
-			return nil, actionResult{OK: false, Detail: "schedule request was accepted (or GoCD reported a conflict) but no new instance was confirmed within the wait window; GoCD may still schedule it, so check pipeline history before retrying — a blind retry can double-run the pipeline"}, nil
+			return nil, actionResult{OK: false, Detail: "schedule request was accepted (or GoCD reported a conflict) but no new instance attributed to this trigger was confirmed within the wait window; GoCD may still schedule it, so check pipeline history before retrying — a blind retry can double-run the pipeline"}, nil
 		}
 		return nil, actionResult{OK: true, Detail: fmt.Sprintf("scheduled, instance #%d", res.Counter)}, nil
 	})

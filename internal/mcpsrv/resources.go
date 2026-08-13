@@ -84,11 +84,11 @@ func registerResources(s *mcp.Server, cfg *config.Config) {
 		if err != nil {
 			return nil, err
 		}
-		runs, err := svc.PipelineHistory(ctx, name, 0)
+		page, err := svc.PipelineHistory(ctx, name, "")
 		if err != nil {
 			return nil, err
 		}
-		return jsonResource(req.Params.URI, runs)
+		return jsonResource(req.Params.URI, page.Runs)
 	})
 }
 

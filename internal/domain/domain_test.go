@@ -23,8 +23,10 @@ type fakeClient struct {
 	histErr       error // returned by PipelineHistory
 	histErrOnCall int   // 1-based call number histErr fires from; 0 = every call
 	histCalls     int
-	counters      []int // successive latest counters returned by PipelineHistory (last value repeats)
+	hist          [][]gocd.HistoryItem // successive PipelineHistory responses (last one repeats)
 	histIdx       int
+	histAfters    []string // "after" cursor received by each PipelineHistory call
+	histNextAfter string   // NextAfter returned with every non-empty page
 
 	// recorded action calls
 	calls []string
@@ -36,20 +38,30 @@ func (f *fakeClient) Dashboard(context.Context) ([]gocd.PipelineSummary, error) 
 func (f *fakeClient) PipelineStatus(context.Context, string) (*gocd.PipelineStatus, error) {
 	return &gocd.PipelineStatus{}, nil
 }
-func (f *fakeClient) PipelineHistory(context.Context, string, int) ([]gocd.HistoryItem, error) {
+func (f *fakeClient) PipelineHistory(_ context.Context, _ string, after string) (*gocd.HistoryPage, error) {
 	f.histCalls++
+	f.histAfters = append(f.histAfters, after)
 	if f.histErr != nil && (f.histErrOnCall == 0 || f.histCalls >= f.histErrOnCall) {
 		return nil, f.histErr
 	}
-	if len(f.counters) == 0 {
-		return nil, nil
+	if len(f.hist) == 0 {
+		return &gocd.HistoryPage{}, nil
 	}
 	i := f.histIdx
-	if i >= len(f.counters) {
-		i = len(f.counters) - 1
+	if i >= len(f.hist) {
+		i = len(f.hist) - 1
 	}
 	f.histIdx++
-	return []gocd.HistoryItem{{Counter: f.counters[i]}}, nil
+	next := ""
+	if len(f.hist[i]) > 0 {
+		next = f.histNextAfter
+	}
+	return &gocd.HistoryPage{Runs: f.hist[i], NextAfter: next}, nil
+}
+
+// forcedRun is a history item for a manually/API-forced run, as GoCD records it.
+func forcedRun(counter int, login string) gocd.HistoryItem {
+	return gocd.HistoryItem{Counter: counter, TriggeredBy: login, TriggerForced: true}
 }
 func (f *fakeClient) ListAgents(context.Context) ([]gocd.Agent, error) { return nil, nil }
 func (f *fakeClient) PipelineConfig(context.Context, string) (*gocd.PipelineConfig, error) {
@@ -145,10 +157,56 @@ func TestValidatePipelineName(t *testing.T) {
 	}
 }
 
-func TestPipelineHistory_NegativeOffset(t *testing.T) {
-	svc := NewService(&fakeClient{})
-	if _, err := svc.PipelineHistory(context.Background(), "p", -1); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("expected ErrInvalidArgument for negative offset, got %v", err)
+func TestPipelineHistory_CursorValidation(t *testing.T) {
+	f := &fakeClient{}
+	svc := NewService(f)
+
+	// GoCD requires the cursor to be a positive integer; garbage must be rejected
+	// before any round-trip. "+7" and unicode digits are real ParseUint boundaries,
+	// and the last value overflows uint64.
+	for _, after := range []string{"abc", "-5", "0", "12x", " 7", "+7", "١٢", "18446744073709551616"} {
+		if _, err := svc.PipelineHistory(context.Background(), "p", after); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("after %q: expected ErrInvalidArgument, got %v", after, err)
+		}
+	}
+	if f.histCalls != 0 {
+		t.Fatalf("invalid cursors must not reach the client, got %d calls", f.histCalls)
+	}
+
+	// The accept side of the boundary: leading zeros are a valid positive integer
+	// and must be forwarded verbatim, not normalized.
+	if _, err := svc.PipelineHistory(context.Background(), "p", "007"); err != nil {
+		t.Fatalf("after \"007\": %v", err)
+	}
+	if len(f.histAfters) != 1 || f.histAfters[0] != "007" {
+		t.Fatalf("cursor forwarded = %v, want [007]", f.histAfters)
+	}
+}
+
+func TestPipelineHistory_PassesCursorAndReturnsNext(t *testing.T) {
+	f := &fakeClient{
+		hist:          [][]gocd.HistoryItem{{forcedRun(5, "alice")}},
+		histNextAfter: "37957",
+	}
+	svc := NewService(f)
+
+	page, err := svc.PipelineHistory(context.Background(), "p", "12345")
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if len(f.histAfters) != 1 || f.histAfters[0] != "12345" {
+		t.Fatalf("cursor passed to client = %v, want [12345]", f.histAfters)
+	}
+	if page.NextAfter != "37957" {
+		t.Fatalf("NextAfter = %q, want 37957", page.NextAfter)
+	}
+
+	// Empty cursor (first page) is valid and passed through as-is.
+	if _, err := svc.PipelineHistory(context.Background(), "p", ""); err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if f.histAfters[1] != "" {
+		t.Fatalf("first-page cursor = %q, want empty", f.histAfters[1])
 	}
 }
 
@@ -235,25 +293,34 @@ func TestCreatePipeline_WrapsBody(t *testing.T) {
 }
 
 func TestTriggerPipeline_ConfirmsNewInstance(t *testing.T) {
-	f := &fakeClient{counters: []int{1, 1, 2}} // baseline 1; instance #2 appears on the 2nd poll
+	f := &fakeClient{hist: [][]gocd.HistoryItem{
+		{forcedRun(1, "alice")},                        // baseline 1
+		{forcedRun(1, "alice")},                        // first poll: nothing new
+		{forcedRun(2, "alice"), forcedRun(1, "alice")}, // instance #2 appears on the 2nd poll
+	}}
 	svc := NewService(f)
 	svc.sleep = noSleep
 
-	res, err := svc.TriggerPipeline(context.Background(), "p")
+	res, err := svc.TriggerPipeline(context.Background(), "p", "alice")
 	if err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
 	if !res.Scheduled || res.Counter != 2 {
 		t.Fatalf("res = %+v, want {Scheduled:true Counter:2}", res)
 	}
+	for i, after := range f.histAfters {
+		if after != "" {
+			t.Fatalf("trigger polling must always read the first history page, call %d used cursor %q", i+1, after)
+		}
+	}
 }
 
 func TestTriggerPipeline_AcceptedButNotConfirmed(t *testing.T) {
-	f := &fakeClient{counters: []int{1}} // counter never advances past baseline
+	f := &fakeClient{hist: [][]gocd.HistoryItem{{forcedRun(1, "alice")}}} // nothing new ever appears
 	svc := NewService(f)
 	svc.sleep = noSleep
 
-	res, err := svc.TriggerPipeline(context.Background(), "p")
+	res, err := svc.TriggerPipeline(context.Background(), "p", "alice")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -262,14 +329,105 @@ func TestTriggerPipeline_AcceptedButNotConfirmed(t *testing.T) {
 	}
 }
 
-func TestTriggerPipeline_ConflictButMaterializes(t *testing.T) {
-	// GoCD rejects the POST with a conflict, but the run still materializes: we must
-	// confirm success from the counter, not treat the 409 as a failure.
-	f := &fakeClient{schedErr: gocd.ErrConflict, counters: []int{0, 1}}
+func TestTriggerPipeline_ForeignRunDoesNotConfirm(t *testing.T) {
+	// The core attribution scenario: the counter advances inside the wait window, but
+	// the new run is not attributable to us — a forced run by another user, a timer,
+	// a material change, or a non-forced run under our own login. None of them may
+	// confirm this trigger.
+	for _, tc := range []struct {
+		name    string
+		foreign gocd.HistoryItem
+	}{
+		{"forced by another user", forcedRun(42, "bob")},
+		{"timer", gocd.HistoryItem{Counter: 42, TriggeredBy: "timer"}},
+		{"material change", gocd.HistoryItem{Counter: 42, TriggeredBy: "changes"}},
+		{"same user but not forced", gocd.HistoryItem{Counter: 42, TriggeredBy: "alice"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeClient{hist: [][]gocd.HistoryItem{
+				{forcedRun(41, "bob")},             // baseline 41
+				{tc.foreign, forcedRun(41, "bob")}, // counter grows, but the run is foreign
+			}}
+			svc := NewService(f)
+			svc.sleep = noSleep
+
+			res, err := svc.TriggerPipeline(context.Background(), "p", "alice")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if res.Scheduled {
+				t.Fatalf("res = %+v, want Scheduled:false (foreign run must not confirm)", res)
+			}
+		})
+	}
+}
+
+func TestTriggerPipeline_ForeignThenOwnRun(t *testing.T) {
+	// A foreign run lands first, ours materializes later in the window: the result
+	// must be OUR instance, not the foreign one that advanced the counter.
+	f := &fakeClient{hist: [][]gocd.HistoryItem{
+		{forcedRun(41, "alice")},                       // baseline 41
+		{forcedRun(42, "bob"), forcedRun(41, "alice")}, // foreign run advances the counter
+		{forcedRun(43, "alice"), forcedRun(42, "bob"), forcedRun(41, "alice")},
+	}}
 	svc := NewService(f)
 	svc.sleep = noSleep
 
-	res, err := svc.TriggerPipeline(context.Background(), "p")
+	res, err := svc.TriggerPipeline(context.Background(), "p", "alice")
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	if !res.Scheduled || res.Counter != 43 {
+		t.Fatalf("res = %+v, want {Scheduled:true Counter:43} (the attributed run)", res)
+	}
+}
+
+func TestTriggerPipeline_PicksEarliestOwnRun(t *testing.T) {
+	// Two same-user runs inside the window (concurrent triggers): attribution cannot
+	// tell them apart, so we deterministically report the earliest new one.
+	f := &fakeClient{hist: [][]gocd.HistoryItem{
+		{forcedRun(41, "alice")},
+		{forcedRun(43, "alice"), forcedRun(42, "alice"), forcedRun(41, "alice")},
+	}}
+	svc := NewService(f)
+	svc.sleep = noSleep
+
+	res, err := svc.TriggerPipeline(context.Background(), "p", "alice")
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	if !res.Scheduled || res.Counter != 42 {
+		t.Fatalf("res = %+v, want {Scheduled:true Counter:42} (earliest new own run)", res)
+	}
+}
+
+func TestTriggerPipeline_EmptyLoginRejected(t *testing.T) {
+	f := &fakeClient{}
+	svc := NewService(f)
+	svc.sleep = noSleep
+
+	if _, err := svc.TriggerPipeline(context.Background(), "p", "  "); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("expected ErrInvalidArgument for empty login, got %v", err)
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("SchedulePipeline must not be called without a login: %v", f.calls)
+	}
+	if f.histCalls != 0 {
+		t.Fatalf("the login guard must fire before the baseline read, got %d history calls", f.histCalls)
+	}
+}
+
+func TestTriggerPipeline_ConflictButMaterializes(t *testing.T) {
+	// GoCD rejects the POST with a conflict, but the run still materializes: we must
+	// confirm success from the attributed instance, not treat the 409 as a failure.
+	f := &fakeClient{schedErr: gocd.ErrConflict, hist: [][]gocd.HistoryItem{
+		{},                      // baseline: pipeline has never run
+		{forcedRun(1, "alice")}, // the run materializes despite the 409
+	}}
+	svc := NewService(f)
+	svc.sleep = noSleep
+
+	res, err := svc.TriggerPipeline(context.Background(), "p", "alice")
 	if err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
@@ -281,11 +439,11 @@ func TestTriggerPipeline_ConflictButMaterializes(t *testing.T) {
 func TestTriggerPipeline_ConflictNoInstance(t *testing.T) {
 	// A 409 with no new instance is NOT an error: GoCD may still schedule it, so we
 	// report unconfirmed and let the caller verify rather than risk a double-run.
-	f := &fakeClient{schedErr: gocd.ErrConflict, counters: []int{5}} // conflict and nothing new
+	f := &fakeClient{schedErr: gocd.ErrConflict, hist: [][]gocd.HistoryItem{{forcedRun(5, "alice")}}}
 	svc := NewService(f)
 	svc.sleep = noSleep
 
-	res, err := svc.TriggerPipeline(context.Background(), "p")
+	res, err := svc.TriggerPipeline(context.Background(), "p", "alice")
 	if err != nil {
 		t.Fatalf("409 must not be an error, got %v", err)
 	}
@@ -298,11 +456,15 @@ func TestTriggerPipeline_PollFailureDegradesToUnconfirmed(t *testing.T) {
 	// The schedule was accepted; a history failure during confirmation must NOT become
 	// a tool error (an error invites a retry, and a retry can double-run the pipeline).
 	sentinel := errors.New("gocd went away")
-	f := &fakeClient{counters: []int{3}, histErr: sentinel, histErrOnCall: 2} // baseline ok, polls fail
+	f := &fakeClient{
+		hist:          [][]gocd.HistoryItem{{forcedRun(3, "alice")}},
+		histErr:       sentinel,
+		histErrOnCall: 2, // baseline ok, polls fail
+	}
 	svc := NewService(f)
 	svc.sleep = noSleep
 
-	res, err := svc.TriggerPipeline(context.Background(), "p")
+	res, err := svc.TriggerPipeline(context.Background(), "p", "alice")
 	if err != nil {
 		t.Fatalf("post-accept poll failure must degrade to unconfirmed, got error %v", err)
 	}
@@ -314,11 +476,11 @@ func TestTriggerPipeline_PollFailureDegradesToUnconfirmed(t *testing.T) {
 func TestTriggerPipeline_CancelDuringWaitDegradesToUnconfirmed(t *testing.T) {
 	// A cancelled request (client disconnect / MCP timeout) after the schedule was
 	// accepted must also degrade to unconfirmed, not to an error.
-	f := &fakeClient{counters: []int{3}}
+	f := &fakeClient{hist: [][]gocd.HistoryItem{{forcedRun(3, "alice")}}}
 	svc := NewService(f)
 	svc.sleep = func(context.Context, time.Duration) error { return context.Canceled }
 
-	res, err := svc.TriggerPipeline(context.Background(), "p")
+	res, err := svc.TriggerPipeline(context.Background(), "p", "alice")
 	if err != nil {
 		t.Fatalf("cancel during wait must degrade to unconfirmed, got error %v", err)
 	}
@@ -335,7 +497,7 @@ func TestTriggerPipeline_BaselineErrorStillFails(t *testing.T) {
 	svc := NewService(f)
 	svc.sleep = noSleep
 
-	if _, err := svc.TriggerPipeline(context.Background(), "p"); !errors.Is(err, sentinel) {
+	if _, err := svc.TriggerPipeline(context.Background(), "p", "alice"); !errors.Is(err, sentinel) {
 		t.Fatalf("expected baseline error to propagate, got %v", err)
 	}
 	if len(f.calls) != 0 {
@@ -345,22 +507,25 @@ func TestTriggerPipeline_BaselineErrorStillFails(t *testing.T) {
 
 func TestTriggerPipeline_HardScheduleErrorPropagates(t *testing.T) {
 	sentinel := errors.New("boom")
-	f := &fakeClient{schedErr: sentinel, counters: []int{1}}
+	f := &fakeClient{schedErr: sentinel, hist: [][]gocd.HistoryItem{{forcedRun(1, "alice")}}}
 	svc := NewService(f)
 	svc.sleep = noSleep
 
-	if _, err := svc.TriggerPipeline(context.Background(), "p"); !errors.Is(err, sentinel) {
+	if _, err := svc.TriggerPipeline(context.Background(), "p", "alice"); !errors.Is(err, sentinel) {
 		t.Fatalf("expected propagated schedule error, got %v", err)
 	}
 }
 
 func TestActionHappyPathReachesClient(t *testing.T) {
 	ctx := context.Background()
-	f := &fakeClient{counters: []int{0, 1}} // baseline 0, then a new instance appears
+	f := &fakeClient{hist: [][]gocd.HistoryItem{
+		{}, // baseline: no runs yet
+		{forcedRun(1, "alice")},
+	}}
 	svc := NewService(f)
 	svc.sleep = noSleep
 
-	if res, err := svc.TriggerPipeline(ctx, "p"); err != nil || !res.Scheduled {
+	if res, err := svc.TriggerPipeline(ctx, "p", "alice"); err != nil || !res.Scheduled {
 		t.Fatalf("trigger: res=%+v err=%v", res, err)
 	}
 	if err := svc.PausePipeline(ctx, "p", "maint"); err != nil {

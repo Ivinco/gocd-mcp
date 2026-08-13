@@ -3,6 +3,7 @@ package gocd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -114,40 +115,83 @@ func (c *Client) PipelineStatus(ctx context.Context, name string) (*PipelineStat
 // --- history ---
 
 type historyResp struct {
+	Links struct {
+		Next struct {
+			Href string `json:"href"`
+		} `json:"next"`
+	} `json:"_links"`
 	Pipelines []struct {
 		Counter       int    `json:"counter"`
 		Label         string `json:"label"`
 		ScheduledDate int64  `json:"scheduled_date"`
 		Comment       string `json:"comment"`
-		Stages        []struct {
+		BuildCause    struct {
+			Approver      string `json:"approver"`
+			TriggerForced bool   `json:"trigger_forced"`
+		} `json:"build_cause"`
+		Stages []struct {
 			Name   string `json:"name"`
 			Status string `json:"status"`
 		} `json:"stages"`
 	} `json:"pipelines"`
 }
 
-// PipelineHistory returns past runs of a pipeline, newest first, starting at offset.
-func (c *Client) PipelineHistory(ctx context.Context, name string, offset int) ([]HistoryItem, error) {
-	if offset < 0 {
-		offset = 0
+// PipelineHistory returns one page of a pipeline's past runs, newest first. GoCD
+// paginates this API by an opaque cursor: pass "" for the first page and the previous
+// page's NextAfter for the next one (GoCD ignores the legacy offset parameter).
+func (c *Client) PipelineHistory(ctx context.Context, name, after string) (*HistoryPage, error) {
+	path := "/go/api/pipelines/" + url.PathEscape(name) + "/history"
+	if after != "" {
+		path += "?after=" + url.QueryEscape(after)
 	}
 	var resp historyResp
 	if _, err := c.doJSON(ctx, request{
 		method: http.MethodGet,
-		path:   "/go/api/pipelines/" + url.PathEscape(name) + "/history?offset=" + strconv.Itoa(offset),
+		path:   path,
 		accept: acceptHistory,
 	}, &resp); err != nil {
 		return nil, err
 	}
 	out := make([]HistoryItem, 0, len(resp.Pipelines))
 	for _, p := range resp.Pipelines {
-		item := HistoryItem{Counter: p.Counter, Label: p.Label, ScheduledDate: p.ScheduledDate, Comment: p.Comment}
+		item := HistoryItem{
+			Counter:       p.Counter,
+			Label:         p.Label,
+			ScheduledDate: p.ScheduledDate,
+			Comment:       p.Comment,
+			TriggeredBy:   p.BuildCause.Approver,
+			TriggerForced: p.BuildCause.TriggerForced,
+		}
 		for _, st := range p.Stages {
 			item.Stages = append(item.Stages, StageStatus{Name: st.Name, Status: st.Status})
 		}
 		out = append(out, item)
 	}
-	return out, nil
+	next, err := nextAfterCursor(resp.Links.Next.Href)
+	if err != nil {
+		return nil, err
+	}
+	return &HistoryPage{Runs: out, NextAfter: next}, nil
+}
+
+// nextAfterCursor extracts the "after" cursor from the next-page link. An absent link
+// means there are no further pages; a link we cannot extract a usable cursor from is
+// an error — treating it as the last page would silently truncate history for the
+// caller. The cursor must be a positive integer (GoCD's format, which the server also
+// enforces on input), so we never hand out a cursor a follow-up call would reject.
+func nextAfterCursor(href string) (string, error) {
+	if href == "" {
+		return "", nil
+	}
+	u, err := url.Parse(href)
+	if err != nil {
+		return "", fmt.Errorf("malformed next-page link %q: %w", href, err)
+	}
+	after := u.Query().Get("after")
+	if v, err := strconv.ParseUint(after, 10, 64); err != nil || v == 0 {
+		return "", fmt.Errorf("next-page link %q carries no usable after cursor", href)
+	}
+	return after, nil
 }
 
 // --- config ---

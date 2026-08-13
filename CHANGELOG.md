@@ -6,6 +6,41 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `get_pipeline_history` is now cursor-paginated and the `offset` input
+  is gone. The old parameter was passed through to GoCD, but the current history API
+  (verified on GoCD 25.4.0) silently ignores it — every call returned the first page
+  regardless. That API paginates by an opaque cursor, so the tool now follows suit:
+  the response carries `next_after`, and passing it back as `after` fetches the next
+  (older) page. Requests that still send `offset` (even `offset: 0`) are rejected by
+  the input schema instead of being silently served the first page. MCP clients
+  discover tool schemas at session start, so only hard-coded callers are affected.
+
+### Fixed
+
+- `trigger_pipeline` now attributes the confirmed instance to the caller instead of
+  trusting counter growth alone (#3): confirmation requires a new run that is *forced*
+  and *approved by the calling user* in GoCD's build cause. A timer trigger, a material
+  change or another user's run of the same pipeline inside the wait window is no longer
+  reported as this call's instance.
+
+### Added
+
+- `get_pipeline_history` (and the history resource) now include each run's build cause:
+  `triggered_by` (the approver — a user login, or `timer` / `changes` for automatic
+  runs) and `trigger_forced`.
+
+### Known gaps
+
+- Two concurrent forced triggers by the *same* user within the wait window remain
+  indistinguishable — GoCD records only the approver in the build cause, so both calls
+  may report the same (earliest) new instance. The most likely way to hit this is
+  retrying after an unconfirmed result: if the first attempt's run materializes late,
+  the retry may report that earlier instance while a second run also exists — another
+  reason to check history instead of retrying blindly. This residual ambiguity is
+  accepted; see the discussion in [#3](https://github.com/ivinco/gocd-mcp/issues/3).
+
 ## [1.0.2] - 2026-07-30
 
 ### Fixed
