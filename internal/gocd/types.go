@@ -83,12 +83,21 @@ type PipelineInstance struct {
 	Stages        []InstanceStage `json:"stages"`
 }
 
-// InstanceStage is one stage within a pipeline instance.
+// InstanceStage is one stage within a pipeline instance. Scheduled is false for a
+// stage that has not run yet (e.g. a manual stage awaiting approval; GoCD still
+// reports counter 1 for it). ApprovedBy is the user who ran or re-ran the stage, or
+// "changes" for automatic runs; CanRun is GoCD's verdict on whether the stage can be
+// run now.
 type InstanceStage struct {
-	Name   string        `json:"name"`
-	Status string        `json:"status,omitempty"`
-	Result string        `json:"result,omitempty"`
-	Jobs   []InstanceJob `json:"jobs,omitempty"`
+	Name         string        `json:"name"`
+	Counter      int           `json:"counter,omitempty"`
+	Scheduled    bool          `json:"scheduled"`
+	ApprovalType string        `json:"approval_type,omitempty"`
+	ApprovedBy   string        `json:"approved_by,omitempty"`
+	CanRun       bool          `json:"can_run"`
+	Status       string        `json:"status,omitempty"`
+	Result       string        `json:"result,omitempty"`
+	Jobs         []InstanceJob `json:"jobs,omitempty"`
 }
 
 // InstanceJob is one job within a stage instance.

@@ -2,7 +2,9 @@ package gocd_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -182,5 +184,32 @@ func TestStatusErrorMapping(t *testing.T) {
 	}
 	if _, err := c.PipelineConfig(context.Background(), "stale"); !errors.Is(err, gocd.ErrConflict) {
 		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+}
+
+func TestStatusError_ConflictCarriesMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/go/api/admin/pipelines/p" {
+			w.WriteHeader(http.StatusPreconditionFailed) // ETag mismatch, no body
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"message":"Cannot schedule: Pipeline[name='p', counter='2', label='2'] is still in progress"}`)
+	}))
+	defer srv.Close()
+	c := gocd.NewClient(srv.URL, "tok", 5*time.Second)
+
+	err := c.RunStage(context.Background(), "p", 2, "deploy")
+	var ce *gocd.ConflictError
+	if !errors.Is(err, gocd.ErrConflict) || !errors.As(err, &ce) {
+		t.Fatalf("409 must be a ConflictError matching ErrConflict, got %T %v", err, err)
+	}
+	if ce.StatusCode != http.StatusConflict || !strings.HasPrefix(ce.Message, "Cannot schedule:") || !strings.Contains(err.Error(), "still in progress") {
+		t.Fatalf("conflict = %+v (%v), want GoCD's message", ce, err)
+	}
+
+	_, err = c.UpdatePipelineConfig(context.Background(), "p", json.RawMessage(`{}`), `"e"`)
+	if !errors.As(err, &ce) || ce.StatusCode != http.StatusPreconditionFailed || ce.Message != "" || !errors.Is(err, gocd.ErrConflict) {
+		t.Fatalf("412 without body = %T %v, want ConflictError{412} matching ErrConflict", err, err)
 	}
 }

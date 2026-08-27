@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -38,6 +39,12 @@ func toolError(err error) *mcp.CallToolResult {
 		msg = "not found in GoCD"
 	case errors.Is(err, gocd.ErrConflict):
 		msg = "version conflict (ETag mismatch); re-read and retry"
+		// A 409 carries GoCD's own reason (e.g. "Cannot schedule: ... is still in
+		// progress"), which beats the ETag hint meant for 412.
+		var ce *gocd.ConflictError
+		if errors.As(err, &ce) && ce.StatusCode == http.StatusConflict && ce.Message != "" {
+			msg = "GoCD refused: " + ce.Message
+		}
 	}
 	return &mcp.CallToolResult{
 		IsError: true,

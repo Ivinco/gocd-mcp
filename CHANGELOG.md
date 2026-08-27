@@ -17,6 +17,26 @@ All notable changes to this project are documented here. The format is based on
   round-trip — the API cannot rename templates and answers a mismatch with a
   misleading 422. Deleting a template that pipelines still use is refused by GoCD;
   the refusal, naming those pipelines, is returned as the tool error.
+- `trigger_stage` (`actions` tier, audited) runs one stage of an existing pipeline run:
+  a manual-approval stage that has not run yet, or a fresh run of a stage that already
+  has. Confirmation follows `trigger_pipeline`: GoCD's async accept is not trusted, and
+  the tool reports `ok:true` only once the pipeline instance shows the stage scheduled,
+  with a counter above the baseline read before the request, and approved by the
+  calling user — otherwise the unconfirmed `ok:false` result, never an error, so a
+  blind retry does not run the stage twice. One deliberate difference: GoCD's 409 for
+  a stage run ("Cannot schedule: … is still in progress") is a synchronous refusal
+  that schedules nothing, so it is returned at once as an error carrying that reason
+  instead of being folded into the wait.
+- `get_pipeline_instance` stages now carry `counter`, `scheduled`, `approval_type`,
+  `approved_by` and `can_run`, so a manual stage awaiting approval — and the stage
+  counter that `cancel_stage` and `get_job_console_log` need — can be read directly.
+
+### Changed
+
+- A `409` / `412` from GoCD now keeps GoCD's message (`gocd.ConflictError`, still
+  matching `ErrConflict`). Tool errors for a `409` show that reason ("GoCD refused:
+  …"); an ETag mismatch (`412`) keeps the re-read-and-retry hint. Verified on GoCD
+  25.4.0.
 
 ### Fixed
 

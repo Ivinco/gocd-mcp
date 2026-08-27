@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -27,6 +28,14 @@ type fakeClient struct {
 	histIdx       int
 	histAfters    []string // "after" cursor received by each PipelineHistory call
 	histNextAfter string   // NextAfter returned with every non-empty page
+
+	// stage run controls
+	runStageErr   error // returned by RunStage
+	instErr       error // returned by PipelineInstance
+	instErrOnCall int   // 1-based call number instErr fires from; 0 = every call
+	instCalls     int
+	inst          []*gocd.PipelineInstance // successive PipelineInstance responses (last one repeats)
+	instIdx       int
 
 	// recorded action calls
 	calls []string
@@ -71,7 +80,23 @@ func (f *fakeClient) JobConsoleLog(context.Context, string, int, string, int, st
 	return "line1\nline2\nline3\n", nil
 }
 func (f *fakeClient) PipelineInstance(_ context.Context, name string, counter int) (*gocd.PipelineInstance, error) {
-	return &gocd.PipelineInstance{Name: name, Counter: counter}, nil
+	f.instCalls++
+	if f.instErr != nil && (f.instErrOnCall == 0 || f.instCalls >= f.instErrOnCall) {
+		return nil, f.instErr
+	}
+	if len(f.inst) == 0 {
+		return &gocd.PipelineInstance{Name: name, Counter: counter}, nil
+	}
+	i := f.instIdx
+	if i >= len(f.inst) {
+		i = len(f.inst) - 1
+	}
+	f.instIdx++
+	return f.inst[i], nil
+}
+func (f *fakeClient) RunStage(_ context.Context, pipeline string, pc int, stage string) error {
+	f.calls = append(f.calls, "run_stage:"+pipeline+"/"+strconv.Itoa(pc)+"/"+stage)
+	return f.runStageErr
 }
 func (f *fakeClient) DeletePipeline(_ context.Context, name string) error {
 	f.calls = append(f.calls, "delete:"+name)

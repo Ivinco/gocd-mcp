@@ -45,7 +45,7 @@ call, because the server acts strictly as the authenticated user.
 
 - 🔐 **Per-user identity** — the MCP client presents a GoCD PAT as a bearer token; the server
   validates it and acts as that user, so GoCD RBAC applies automatically. No shared service account.
-- 🧰 **22 tools across three risk tiers** — read-only, safe actions, and config editing — gated
+- 🧰 **23 tools across three risk tiers** — read-only, safe actions, and config editing — gated
   by a single `TOOLSET` switch.
 - 🧱 **Typed, compact outputs** — focused projections of GoCD's responses to keep token usage low.
 - 📓 **Audit log** — every mutating operation is logged (login, action, target); tokens are never logged.
@@ -68,13 +68,14 @@ for user confirmation before running them.
 | `list_pipelines` | all | read | Dashboard pipelines with latest run status, pause/lock state (optional group filter) |
 | `get_pipeline_status` | all | read | Pause / lock / schedulable state of a pipeline |
 | `get_pipeline_history` | all | read | Past runs with stage statuses and who triggered each run; cursor-paginated — pass the previous page's `next_after` as `after` for older runs |
-| `get_pipeline_instance` | all | read | One run's detail incl. per-stage and per-job state/result |
+| `get_pipeline_instance` | all | read | One run's detail incl. per-stage and per-job state/result; each stage carries its counter, approval type / approver, whether it is scheduled yet and whether it can run now |
 | `get_job_console_log` | all | read | Console log of a job run (last `tail_lines`, default 200) |
 | `list_agents` | all | read | Build agents and their config/runtime state |
 | `get_pipeline_config` | all | read | Full pipeline config + ETag (needed to update) |
 | `list_templates` | all | read | Pipeline templates with the pipelines using each one and whether you can edit / administer it |
 | `get_template` | all | read | Full template config (name, stages) + ETag (needed to update) |
 | `trigger_pipeline` | actions, full | action | Schedule a pipeline run; confirms a new instance attributed to this trigger — forced by the calling user — materialized (bounded wait) rather than trusting GoCD's async accept, so a timer, material change or another user's run inside the window is not mistaken for yours (two concurrent triggers by the *same* user remain indistinguishable). Once the request is accepted, any confirmation failure yields an unconfirmed `ok:false` result — never an error — so callers aren't tempted into a retry that could double-run the pipeline |
+| `trigger_stage` | actions, full | action | Run one stage of an existing run: start a manual-approval stage that hasn't run yet, or re-run a stage that already has (new stage counter). Confirmed like `trigger_pipeline` — the stage must show up scheduled, with a counter above the baseline and approved by the calling user — with the same unconfirmed `ok:false` semantics. GoCD's refusal (409, e.g. another stage of that run is still in progress) is a synchronous no-op and comes back as an error with GoCD's reason |
 | `pause_pipeline` | actions, full | action | Pause a pipeline (reason required) |
 | `unpause_pipeline` | actions, full | action | Resume a paused pipeline |
 | `cancel_stage` | actions, full | action | Cancel a running stage |
@@ -323,7 +324,7 @@ appropriate to a use case:
 | `TOOLSET` | Includes |
 |-----------|----------|
 | `readonly` | Queries only — no state changes |
-| `actions` | `readonly` + trigger / pause / unpause / cancel / comment |
+| `actions` | `readonly` + trigger pipeline or stage / pause / unpause / cancel / comment |
 | `full` | `actions` + config editing (update / create / delete pipeline or template, update agent) |
 
 A read-only deployment is useful for broad, low-risk access; `full` should be reserved for
@@ -412,7 +413,8 @@ offline (a fake GoCD via `httptest`); no live GoCD instance is required.
 | Tool error "your GoCD user lacks permission" | The user's GoCD RBAC does not allow the operation |
 | Tool error "version conflict (ETag mismatch)" | Config changed since you read it — re-run `get_pipeline_config` / `get_template` and retry |
 | `delete_template` fails with "referenced by pipeline(s)" | GoCD refuses to delete a template that pipelines still use — `list_templates` shows which; move them off the template first |
-| `trigger_pipeline` returns `ok:false` (unconfirmed) | The schedule request was accepted but no new run attributed to your trigger was confirmed within the wait window — GoCD may still schedule it. Check the pipeline history before retrying; a blind retry can double-run the pipeline |
+| `trigger_pipeline` / `trigger_stage` returns `ok:false` (unconfirmed) | The request was accepted but no new run (pipeline instance or stage run) attributed to your call was confirmed within the wait window — GoCD may still schedule it. Check the pipeline history / instance before retrying; a blind retry can run it twice |
+| `trigger_stage` error "GoCD refused: Cannot schedule: … is still in progress" | A stage of that run (possibly the one you asked for) is still running — GoCD schedules nothing in that case. Wait for it to finish, then retry |
 | `/readyz` returns 503 | GoCD is unreachable from the server (check `GOCD_BASE_URL` / network) |
 | A tool isn't listed | It's gated by `TOOLSET` — raise the tier (`actions` / `full`) |
 | `GOCD_BASE_URL is required` on startup | The base URL has no default — set it in the config file or the environment |

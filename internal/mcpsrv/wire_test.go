@@ -29,6 +29,7 @@ const goodToken = "goodtoken"
 func fakeGoCD(t *testing.T) *httptest.Server {
 	t.Helper()
 	var triggered atomic.Bool // flips once pipeline "tp" is scheduled, so history advances
+	var stageRun atomic.Bool  // flips once tp/1/deploy is run, so the instance shows it scheduled
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+goodToken {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -62,6 +63,24 @@ func fakeGoCD(t *testing.T) *httptest.Server {
 				counter = 2
 			}
 			_, _ = io.WriteString(w, fmt.Sprintf(`{"_links":{"next":{"href":"http://gocd.example/go/api/pipelines/tp/history?after=42"}},"pipelines":[{"counter":%d,"label":"%d","build_cause":{"approver":"alice","trigger_forced":true},"stages":[]}]}`, counter, counter))
+		case "/go/api/stages/tp/1/deploy/run":
+			stageRun.Store(true)
+			w.WriteHeader(http.StatusAccepted)
+		case "/go/api/stages/tp/1/build/run":
+			// GoCD's synchronous refusal while a stage of the run is active.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"message":"Cannot schedule: Pipeline[name='tp', counter='2', label='2'] is still in progress"}`)
+		case "/go/api/pipelines/tp/1":
+			// Stage counters are strings in this API. "deploy" is a manual stage: pending
+			// (counter "1", scheduled false) until run, then scheduled and approved by the
+			// authenticated user.
+			w.Header().Set("Content-Type", "application/json")
+			deploy := `{"name":"deploy","counter":"1","scheduled":false,"approval_type":null,"approved_by":null,"can_run":true,"status":"Unknown","result":null,"jobs":[]}`
+			if stageRun.Load() {
+				deploy = `{"name":"deploy","counter":"1","scheduled":true,"approval_type":"manual","approved_by":"alice","can_run":false,"status":"Building","result":"Unknown","jobs":[]}`
+			}
+			_, _ = io.WriteString(w, `{"name":"tp","counter":1,"label":"1","stages":[{"name":"build","counter":"1","scheduled":true,"approval_type":"success","approved_by":"changes","can_run":true,"status":"Passed","result":"Passed","jobs":[]},`+deploy+`]}`)
 		case "/go/api/admin/pipelines/stale":
 			w.WriteHeader(http.StatusPreconditionFailed) // simulate ETag conflict
 		case "/go/api/admin/templates":

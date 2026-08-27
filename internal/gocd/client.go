@@ -91,11 +91,24 @@ func statusError(resp *http.Response) error {
 	case http.StatusNotFound:
 		return ErrNotFound
 	case http.StatusConflict, http.StatusPreconditionFailed:
-		return ErrConflict
+		return &ConflictError{StatusCode: resp.StatusCode, Message: responseMessage(resp)}
 	default:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return &APIError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(body))}
 	}
+}
+
+// responseMessage extracts GoCD's {"message": ...} from an error response, falling
+// back to the raw (bounded) body when it is not in that shape.
+func responseMessage(resp *http.Response) string {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+	var m struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &m); err == nil && m.Message != "" {
+		return m.Message
+	}
+	return strings.TrimSpace(string(body))
 }
 
 // User is the subset of GoCD's current_user response we rely on.

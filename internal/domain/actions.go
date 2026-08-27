@@ -150,8 +150,8 @@ func (s *Service) CancelStage(ctx context.Context, pipeline string, pipelineCoun
 	if err := validatePipelineName(pipeline); err != nil {
 		return err
 	}
-	if strings.TrimSpace(stage) == "" || strings.ContainsAny(stage, "/\\ \t\n") {
-		return fmt.Errorf("%w: invalid stage name %q", ErrInvalidArgument, stage)
+	if err := validateStageName(stage); err != nil {
+		return err
 	}
 	if pipelineCounter < 1 || stageCounter < 1 {
 		return fmt.Errorf("%w: counters must be >= 1", ErrInvalidArgument)
@@ -171,4 +171,12 @@ func (s *Service) CommentOnPipeline(ctx context.Context, name string, counter in
 		return fmt.Errorf("%w: comment text is required", ErrInvalidArgument)
 	}
 	return s.c.CommentOnPipeline(ctx, name, counter, comment)
+}
+
+// validateStageName rejects empty stage names and names that would break the URL path.
+func validateStageName(stage string) error {
+	if strings.TrimSpace(stage) == "" || strings.ContainsAny(stage, "/\\ \t\n") {
+		return fmt.Errorf("%w: invalid stage name %q", ErrInvalidArgument, stage)
+	}
+	return nil
 }

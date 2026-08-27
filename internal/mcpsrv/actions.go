@@ -34,6 +34,12 @@ type pauseInput struct {
 	Cause string `json:"cause" jsonschema:"reason for pausing (required)"`
 }
 
+type triggerStageInput struct {
+	Pipeline        string `json:"pipeline" jsonschema:"the pipeline name"`
+	PipelineCounter int    `json:"pipeline_counter" jsonschema:"the pipeline run counter"`
+	Stage           string `json:"stage" jsonschema:"the stage name"`
+}
+
 type cancelStageInput struct {
 	Pipeline        string `json:"pipeline" jsonschema:"the pipeline name"`
 	PipelineCounter int    `json:"pipeline_counter" jsonschema:"the pipeline run counter"`
@@ -78,6 +84,32 @@ func registerActions(s *mcp.Server, cfg *config.Config, log *slog.Logger) {
 			return nil, actionResult{OK: false, Detail: "schedule request was accepted (or GoCD reported a conflict) but no new instance attributed to this trigger was confirmed within the wait window; GoCD may still schedule it, so check pipeline history before retrying — a blind retry can double-run the pipeline"}, nil
 		}
 		return nil, actionResult{OK: true, Detail: fmt.Sprintf("scheduled, instance #%d", res.Counter)}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "trigger_stage",
+		Description: "Run a single stage of an existing pipeline run: start a manual-approval stage that has not run yet, or re-run a stage that already has (new stage counter). Confirms the stage was scheduled for this call rather than trusting GoCD's async accept.",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(false)},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in triggerStageInput) (*mcp.CallToolResult, actionResult, error) {
+		svc, err := serviceFor(ctx, cfg)
+		if err != nil {
+			return nil, actionResult{}, err
+		}
+		audit(ctx, log, "trigger_stage", fmt.Sprintf("%s/%d/%s", in.Pipeline, in.PipelineCounter, in.Stage))
+		// GoCD records the caller's login as the approver of a manual run or re-run;
+		// confirmation matches the stage instance against it.
+		p, ok := auth.PrincipalFromContext(ctx)
+		if !ok {
+			return nil, actionResult{}, fmt.Errorf("no authenticated principal in context")
+		}
+		res, err := svc.TriggerStage(ctx, in.Pipeline, in.PipelineCounter, in.Stage, p.Login)
+		if err != nil {
+			return toolError(err), actionResult{}, nil
+		}
+		if !res.Scheduled {
+			return nil, actionResult{OK: false, Detail: "run request was accepted (or GoCD reported a conflict) but no stage run attributed to this call was confirmed within the wait window; GoCD may still schedule it, so check the pipeline instance before retrying — a blind retry can run the stage twice"}, nil
+		}
+		return nil, actionResult{OK: true, Detail: fmt.Sprintf("scheduled, stage counter %d", res.StageCounter)}, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{

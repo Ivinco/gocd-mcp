@@ -35,6 +35,7 @@ type Client interface {
 	PausePipeline(ctx context.Context, name, cause string) error
 	UnpausePipeline(ctx context.Context, name string) error
 	CancelStage(ctx context.Context, pipeline string, pipelineCounter int, stage string, stageCounter int) error
+	RunStage(ctx context.Context, pipeline string, pipelineCounter int, stage string) error
 	CommentOnPipeline(ctx context.Context, name string, counter int, comment string) error
 
 	UpdatePipelineConfig(ctx context.Context, name string, config json.RawMessage, etag string) (string, error)
