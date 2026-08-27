@@ -96,6 +96,17 @@ type pipelineConfigOutput struct {
 	Config map[string]any `json:"config"`
 }
 
+type templateNameInput struct {
+	Name string `json:"name" jsonschema:"the GoCD pipeline template name"`
+}
+type templatesOutput struct {
+	Templates []gocd.TemplateSummary `json:"templates"`
+}
+type templateConfigOutput struct {
+	ETag     string         `json:"etag"`
+	Template map[string]any `json:"template"`
+}
+
 // registerReadOnly adds the read-only tool set. These are available in every toolset.
 func registerReadOnly(s *mcp.Server, cfg *config.Config) {
 	mcp.AddTool(s, &mcp.Tool{
@@ -216,5 +227,41 @@ func registerReadOnly(s *mcp.Server, cfg *config.Config) {
 			return toolError(fmt.Errorf("decode pipeline config: %w", err)), pipelineConfigOutput{}, nil
 		}
 		return nil, pipelineConfigOutput{ETag: cfgResult.ETag, Config: m}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "list_templates",
+		Description: "List GoCD pipeline templates with the pipelines using each one and whether you can edit / administer it.",
+		Annotations: readOnly(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, templatesOutput, error) {
+		svc, err := serviceFor(ctx, cfg)
+		if err != nil {
+			return nil, templatesOutput{}, err
+		}
+		tpls, err := svc.ListTemplates(ctx)
+		if err != nil {
+			return toolError(err), templatesOutput{}, nil
+		}
+		return nil, templatesOutput{Templates: tpls}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_template",
+		Description: "Get the full configuration of a GoCD pipeline template (name and stages) plus its ETag (needed to update the template later).",
+		Annotations: readOnly(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in templateNameInput) (*mcp.CallToolResult, templateConfigOutput, error) {
+		svc, err := serviceFor(ctx, cfg)
+		if err != nil {
+			return nil, templateConfigOutput{}, err
+		}
+		tpl, err := svc.TemplateConfig(ctx, in.Name)
+		if err != nil {
+			return toolError(err), templateConfigOutput{}, nil
+		}
+		var m map[string]any
+		if err := json.Unmarshal(tpl.Config, &m); err != nil {
+			return toolError(fmt.Errorf("decode template config: %w", err)), templateConfigOutput{}, nil
+		}
+		return nil, templateConfigOutput{ETag: tpl.ETag, Template: m}, nil
 	})
 }

@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Pipeline template management (#4). Read-only tier: `list_templates` lists templates
+  with the pipelines using each one and whether the caller may edit / administer it;
+  `get_template` returns a template's full config with its ETag. `full` tier (audited):
+  `create_template`, `update_template` (optimistic locking via ETag/If-Match) and
+  `delete_template`. Verified against the GoCD 25.4.0 templates API (`v7`).
+  `update_template` rejects an object whose name differs from the target before the
+  round-trip — the API cannot rename templates and answers a mismatch with a
+  misleading 422. Deleting a template that pipelines still use is refused by GoCD;
+  the refusal, naming those pipelines, is returned as the tool error.
+
 ## [1.1.0] - 2026-08-13
 
 ### Changed

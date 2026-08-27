@@ -105,3 +105,19 @@ type PipelineConfig struct {
 	ETag   string          `json:"etag"`
 	Config json.RawMessage `json:"config"`
 }
+
+// TemplateSummary is one pipeline template as listed by GoCD: the pipelines that use
+// it and whether the caller may edit / administer it.
+type TemplateSummary struct {
+	Name          string   `json:"name"`
+	CanEdit       bool     `json:"can_edit"`
+	CanAdminister bool     `json:"can_administer"`
+	Pipelines     []string `json:"pipelines"`
+}
+
+// TemplateConfig is a pipeline template's full configuration plus its ETag, which
+// must be supplied as If-Match when updating the template (optimistic locking).
+type TemplateConfig struct {
+	ETag   string          `json:"etag"`
+	Config json.RawMessage `json:"config"`
+}

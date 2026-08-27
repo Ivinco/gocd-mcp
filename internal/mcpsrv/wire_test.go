@@ -64,6 +64,33 @@ func fakeGoCD(t *testing.T) *httptest.Server {
 			_, _ = io.WriteString(w, fmt.Sprintf(`{"_links":{"next":{"href":"http://gocd.example/go/api/pipelines/tp/history?after=42"}},"pipelines":[{"counter":%d,"label":"%d","build_cause":{"approver":"alice","trigger_forced":true},"stages":[]}]}`, counter, counter))
 		case "/go/api/admin/pipelines/stale":
 			w.WriteHeader(http.StatusPreconditionFailed) // simulate ETag conflict
+		case "/go/api/admin/templates":
+			if r.Method == http.MethodPost {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"_embedded":{"templates":[{"name":"t1","can_edit":true,"can_administer":true,"_embedded":{"pipelines":[{"name":"p1"}]}},{"name":"t2","can_edit":true,"can_administer":true,"_embedded":{"pipelines":[]}}]}}`)
+		case "/go/api/admin/templates/t1":
+			switch r.Method {
+			case http.MethodGet:
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("ETag", `"tpl-etag-1"`)
+				_, _ = io.WriteString(w, `{"name":"t1","stages":[{"name":"build"}]}`)
+			case http.MethodPut:
+				if r.Header.Get("If-Match") != `"tpl-etag-1"` {
+					w.WriteHeader(http.StatusPreconditionFailed)
+					return
+				}
+				w.Header().Set("ETag", `"tpl-etag-2"`)
+				w.WriteHeader(http.StatusOK)
+			case http.MethodDelete:
+				// Still used by p1: GoCD refuses and names the pipelines.
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = io.WriteString(w, `{"message":"The template 't1' is being referenced by pipeline(s): [p1]"}`)
+			}
+		case "/go/api/admin/templates/t2":
+			w.WriteHeader(http.StatusOK) // DELETE of an unused template
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -481,6 +508,23 @@ func TestConfigToolset_Gating(t *testing.T) {
 	defer full.Close()
 	if !hasTool(full, "update_pipeline_config") {
 		t.Fatalf("full toolset must expose update_pipeline_config")
+	}
+
+	// Template tools follow the same tiers: reads everywhere, writes only in full.
+	readonly := stackCfg(t, gocd.URL, "readonly", nil)
+	defer readonly.Close()
+	for _, name := range []string{"list_templates", "get_template"} {
+		if !hasTool(readonly, name) {
+			t.Fatalf("readonly toolset must expose %s", name)
+		}
+	}
+	for _, name := range []string{"create_template", "update_template", "delete_template"} {
+		if hasTool(actions, name) {
+			t.Fatalf("actions toolset must not expose %s", name)
+		}
+		if !hasTool(full, name) {
+			t.Fatalf("full toolset must expose %s", name)
+		}
 	}
 }
 

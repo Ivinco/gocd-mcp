@@ -109,6 +109,22 @@ func (f *fakeClient) UpdateAgent(_ context.Context, uuid string, _ json.RawMessa
 	f.calls = append(f.calls, "update_agent:"+uuid)
 	return nil
 }
+func (f *fakeClient) ListTemplates(context.Context) ([]gocd.TemplateSummary, error) { return nil, nil }
+func (f *fakeClient) TemplateConfig(context.Context, string) (*gocd.TemplateConfig, error) {
+	return &gocd.TemplateConfig{}, nil
+}
+func (f *fakeClient) CreateTemplate(_ context.Context, template json.RawMessage) error {
+	f.calls = append(f.calls, "create_template:"+string(template))
+	return nil
+}
+func (f *fakeClient) UpdateTemplate(_ context.Context, name string, _ json.RawMessage, etag string) (string, error) {
+	f.calls = append(f.calls, "update_template:"+name+":"+etag)
+	return "new-etag", nil
+}
+func (f *fakeClient) DeleteTemplate(_ context.Context, name string) error {
+	f.calls = append(f.calls, "delete_template:"+name)
+	return nil
+}
 
 func TestListPipelines_GroupFilter(t *testing.T) {
 	f := &fakeClient{dashboard: []gocd.PipelineSummary{

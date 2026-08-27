@@ -30,6 +30,16 @@ type updateAgentInput struct {
 	Patch map[string]any `json:"patch" jsonschema:"fields to change, e.g. {\"agent_config_state\":\"Disabled\"}"`
 }
 
+type createTemplateInput struct {
+	Template map[string]any `json:"template" jsonschema:"the full template object: {\"name\": ..., \"stages\": [...]}"`
+}
+
+type updateTemplateInput struct {
+	Name     string         `json:"name" jsonschema:"the GoCD pipeline template name"`
+	ETag     string         `json:"etag" jsonschema:"the ETag from get_template (optimistic locking)"`
+	Template map[string]any `json:"template" jsonschema:"the full template object to write; its name must equal name (templates cannot be renamed)"`
+}
+
 // registerConfig adds config-editing tools. Registered only for the "full" toolset.
 // All are marked destructive.
 func registerConfig(s *mcp.Server, cfg *config.Config, log *slog.Logger) {
@@ -112,5 +122,63 @@ func registerConfig(s *mcp.Server, cfg *config.Config, log *slog.Logger) {
 			return toolError(err), actionResult{}, nil
 		}
 		return nil, actionResult{OK: true, Detail: "agent updated"}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "create_template",
+		Description: "Create a new GoCD pipeline template from a full template object (name and stages).",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(true)},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in createTemplateInput) (*mcp.CallToolResult, actionResult, error) {
+		svc, err := serviceFor(ctx, cfg)
+		if err != nil {
+			return nil, actionResult{}, err
+		}
+		raw, err := json.Marshal(in.Template)
+		if err != nil {
+			return toolError(err), actionResult{}, nil
+		}
+		name, _ := in.Template["name"].(string)
+		audit(ctx, log, "create_template", name)
+		if err := svc.CreateTemplate(ctx, raw); err != nil {
+			return toolError(err), actionResult{}, nil
+		}
+		return nil, actionResult{OK: true, Detail: "template created"}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "update_template",
+		Description: "Replace a GoCD pipeline template's configuration. Requires the ETag from get_template (optimistic locking); on a version conflict, re-read the template and retry. Templates cannot be renamed.",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(true)},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in updateTemplateInput) (*mcp.CallToolResult, updateConfigOutput, error) {
+		svc, err := serviceFor(ctx, cfg)
+		if err != nil {
+			return nil, updateConfigOutput{}, err
+		}
+		raw, err := json.Marshal(in.Template)
+		if err != nil {
+			return toolError(err), updateConfigOutput{}, nil
+		}
+		audit(ctx, log, "update_template", in.Name)
+		newETag, err := svc.UpdateTemplate(ctx, in.Name, raw, in.ETag)
+		if err != nil {
+			return toolError(err), updateConfigOutput{}, nil
+		}
+		return nil, updateConfigOutput{OK: true, ETag: newETag}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "delete_template",
+		Description: "Delete a GoCD pipeline template by name. GoCD refuses while any pipeline still uses the template. This is irreversible.",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(true)},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in templateNameInput) (*mcp.CallToolResult, actionResult, error) {
+		svc, err := serviceFor(ctx, cfg)
+		if err != nil {
+			return nil, actionResult{}, err
+		}
+		audit(ctx, log, "delete_template", in.Name)
+		if err := svc.DeleteTemplate(ctx, in.Name); err != nil {
+			return toolError(err), actionResult{}, nil
+		}
+		return nil, actionResult{OK: true, Detail: "template deleted"}, nil
 	})
 }

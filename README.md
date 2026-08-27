@@ -45,7 +45,7 @@ call, because the server acts strictly as the authenticated user.
 
 - 🔐 **Per-user identity** — the MCP client presents a GoCD PAT as a bearer token; the server
   validates it and acts as that user, so GoCD RBAC applies automatically. No shared service account.
-- 🧰 **17 tools across three risk tiers** — read-only, safe actions, and config editing — gated
+- 🧰 **22 tools across three risk tiers** — read-only, safe actions, and config editing — gated
   by a single `TOOLSET` switch.
 - 🧱 **Typed, compact outputs** — focused projections of GoCD's responses to keep token usage low.
 - 📓 **Audit log** — every mutating operation is logged (login, action, target); tokens are never logged.
@@ -72,6 +72,8 @@ for user confirmation before running them.
 | `get_job_console_log` | all | read | Console log of a job run (last `tail_lines`, default 200) |
 | `list_agents` | all | read | Build agents and their config/runtime state |
 | `get_pipeline_config` | all | read | Full pipeline config + ETag (needed to update) |
+| `list_templates` | all | read | Pipeline templates with the pipelines using each one and whether you can edit / administer it |
+| `get_template` | all | read | Full template config (name, stages) + ETag (needed to update) |
 | `trigger_pipeline` | actions, full | action | Schedule a pipeline run; confirms a new instance attributed to this trigger — forced by the calling user — materialized (bounded wait) rather than trusting GoCD's async accept, so a timer, material change or another user's run inside the window is not mistaken for yours (two concurrent triggers by the *same* user remain indistinguishable). Once the request is accepted, any confirmation failure yields an unconfirmed `ok:false` result — never an error — so callers aren't tempted into a retry that could double-run the pipeline |
 | `pause_pipeline` | actions, full | action | Pause a pipeline (reason required) |
 | `unpause_pipeline` | actions, full | action | Resume a paused pipeline |
@@ -81,6 +83,9 @@ for user confirmation before running them.
 | `create_pipeline` | full | **destructive** | Create a new pipeline in a group |
 | `update_agent` | full | **destructive** | Patch an agent (enable/disable, resources, environments) |
 | `delete_pipeline` | full | **destructive** | Delete a pipeline (irreversible) |
+| `create_template` | full | **destructive** | Create a pipeline template from a full template object |
+| `update_template` | full | **destructive** | Replace a template config (optimistic locking via ETag/If-Match; templates cannot be renamed) |
+| `delete_template` | full | **destructive** | Delete a template (irreversible; GoCD refuses while pipelines still use it) |
 
 ### Resources
 
@@ -319,7 +324,7 @@ appropriate to a use case:
 |-----------|----------|
 | `readonly` | Queries only — no state changes |
 | `actions` | `readonly` + trigger / pause / unpause / cancel / comment |
-| `full` | `actions` + config editing (update / create / delete pipeline, update agent) |
+| `full` | `actions` + config editing (update / create / delete pipeline or template, update agent) |
 
 A read-only deployment is useful for broad, low-risk access; `full` should be reserved for
 trusted operators (GoCD RBAC still applies on top).
@@ -405,7 +410,8 @@ offline (a fake GoCD via `httptest`); no live GoCD instance is required.
 |---------|--------------------|
 | `401 Unauthorized` on `/mcp` | Missing/invalid `Authorization: Bearer <PAT>`, or GoCD rejected the token |
 | Tool error "your GoCD user lacks permission" | The user's GoCD RBAC does not allow the operation |
-| Tool error "version conflict (ETag mismatch)" | Config changed since you read it — re-run `get_pipeline_config` and retry |
+| Tool error "version conflict (ETag mismatch)" | Config changed since you read it — re-run `get_pipeline_config` / `get_template` and retry |
+| `delete_template` fails with "referenced by pipeline(s)" | GoCD refuses to delete a template that pipelines still use — `list_templates` shows which; move them off the template first |
 | `trigger_pipeline` returns `ok:false` (unconfirmed) | The schedule request was accepted but no new run attributed to your trigger was confirmed within the wait window — GoCD may still schedule it. Check the pipeline history before retrying; a blind retry can double-run the pipeline |
 | `/readyz` returns 503 | GoCD is unreachable from the server (check `GOCD_BASE_URL` / network) |
 | A tool isn't listed | It's gated by `TOOLSET` — raise the tier (`actions` / `full`) |
