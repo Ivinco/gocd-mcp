@@ -213,3 +213,48 @@ func TestStatusError_ConflictCarriesMessage(t *testing.T) {
 		t.Fatalf("412 without body = %T %v, want ConflictError{412} matching ErrConflict", err, err)
 	}
 }
+
+func TestStatusError_APIErrorCarriesMessageAndValidationDetails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/go/api/admin/pipelines":
+			// A 422 whose top-level message is useless; the reasons sit in nested errors.
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"message":"Validations failed for pipeline 'p'. Error(s): [Validation failed.].",
+				"data":{"name":"p","materials":[{"type":"git","errors":{"auto_update":["used elsewhere with a different value"]}}],
+				"stages":[{"name":"s","jobs":[{"name":"j","errors":{"name":["is a duplicate","is reserved"]}}]}]}}`)
+		case "/go/api/admin/templates":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"message":"Save failed. Please check the logs.","data":{"name":"t"}}`)
+		default:
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, "<html>bad gateway</html>")
+		}
+	}))
+	defer srv.Close()
+	c := gocd.NewClient(srv.URL, "tok", 5*time.Second)
+
+	err := c.CreatePipeline(context.Background(), json.RawMessage(`{}`))
+	var ae *gocd.APIError
+	if !errors.As(err, &ae) || ae.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("422 must be an APIError, got %T %v", err, err)
+	}
+	want := "Validations failed for pipeline 'p'. Error(s): [Validation failed.]. Details: " +
+		"materials[0].auto_update: used elsewhere with a different value; stages[0].jobs[0].name: is a duplicate; is reserved"
+	if ae.Message != want {
+		t.Fatalf("message =\n%q\nwant\n%q", ae.Message, want)
+	}
+	if !strings.Contains(err.Error(), "gocd: 422: Validations failed") {
+		t.Fatalf("Error() = %q", err.Error())
+	}
+
+	err = c.CreateTemplate(context.Background(), json.RawMessage(`{}`))
+	if !errors.As(err, &ae) || ae.Message != "Save failed. Please check the logs." {
+		t.Fatalf("message-only body: got %T %v", err, err)
+	}
+
+	_, err = c.ListAgents(context.Background())
+	if !errors.As(err, &ae) || ae.Message != "" || ae.Body != "<html>bad gateway</html>" || !strings.Contains(err.Error(), "unexpected status 502") {
+		t.Fatalf("non-JSON body must fall back to the raw body: %T %+v", err, ae)
+	}
+}

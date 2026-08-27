@@ -37,6 +37,12 @@ All notable changes to this project are documented here. The format is based on
   matching `ErrConflict`). Tool errors for a `409` show that reason ("GoCD refused:
   …"); an ETag mismatch (`412`) keeps the re-read-and-retry hint. Verified on GoCD
   25.4.0.
+- Other GoCD errors (`422` validation failures, `5xx`) surface GoCD's explanation
+  instead of the raw JSON body: the tool error reads "GoCD rejected the request (HTTP
+  422): <message>", followed by the field-level validation errors GoCD nests under
+  `data` ("Details: materials[0].auto_update: …") — where the top-level message often
+  says no more than "Validation failed.". Responses that are not in GoCD's
+  `{"message": …}` shape still fall back to the raw body.
 
 ### Fixed
 

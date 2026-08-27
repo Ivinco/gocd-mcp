@@ -106,7 +106,7 @@ func fakeGoCD(t *testing.T) *httptest.Server {
 			case http.MethodDelete:
 				// Still used by p1: GoCD refuses and names the pipelines.
 				w.WriteHeader(http.StatusUnprocessableEntity)
-				_, _ = io.WriteString(w, `{"message":"The template 't1' is being referenced by pipeline(s): [p1]"}`)
+				_, _ = io.WriteString(w, `{"message":"Validations failed for template with name 't1'. Error(s): [The template 't1' is being referenced by pipeline(s): [p1]]. Please correct and resubmit."}`)
 			}
 		case "/go/api/admin/templates/t2":
 			w.WriteHeader(http.StatusOK) // DELETE of an unused template

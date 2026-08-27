@@ -412,6 +412,7 @@ offline (a fake GoCD via `httptest`); no live GoCD instance is required.
 | `401 Unauthorized` on `/mcp` | Missing/invalid `Authorization: Bearer <PAT>`, or GoCD rejected the token |
 | Tool error "your GoCD user lacks permission" | The user's GoCD RBAC does not allow the operation |
 | Tool error "version conflict (ETag mismatch)" | Config changed since you read it — re-run `get_pipeline_config` / `get_template` and retry |
+| Tool error "GoCD rejected the request (HTTP 422): …" | GoCD's validation failed; the message ends with the offending fields (e.g. `Details: materials[0].auto_update: …`) — fix the object and retry |
 | `delete_template` fails with "referenced by pipeline(s)" | GoCD refuses to delete a template that pipelines still use — `list_templates` shows which; move them off the template first |
 | `trigger_pipeline` / `trigger_stage` returns `ok:false` (unconfirmed) | The request was accepted but no new run (pipeline instance or stage run) attributed to your call was confirmed within the wait window — GoCD may still schedule it. Check the pipeline history / instance before retrying; a blind retry can run it twice |
 | `trigger_stage` error "GoCD refused: Cannot schedule: … is still in progress" | A stage of that run (possibly the one you asked for) is still running — GoCD schedules nothing in that case. Wait for it to finish, then retry |

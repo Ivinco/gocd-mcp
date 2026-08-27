@@ -28,6 +28,7 @@ func serviceFor(ctx context.Context, cfg *config.Config) (*domain.Service, error
 // translating GoCD sentinels into friendly messages.
 func toolError(err error) *mcp.CallToolResult {
 	msg := err.Error()
+	var apiErr *gocd.APIError
 	switch {
 	case errors.Is(err, domain.ErrInvalidArgument):
 		// already user-facing
@@ -45,6 +46,9 @@ func toolError(err error) *mcp.CallToolResult {
 		if errors.As(err, &ce) && ce.StatusCode == http.StatusConflict && ce.Message != "" {
 			msg = "GoCD refused: " + ce.Message
 		}
+	case errors.As(err, &apiErr) && apiErr.Message != "":
+		// GoCD's own explanation (validation failures name the offending fields).
+		msg = fmt.Sprintf("GoCD rejected the request (HTTP %d): %s", apiErr.StatusCode, apiErr.Message)
 	}
 	return &mcp.CallToolResult{
 		IsError: true,

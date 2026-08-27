@@ -33,11 +33,20 @@ func (e *ConflictError) Error() string {
 func (e *ConflictError) Is(target error) bool { return target == ErrConflict }
 
 // APIError carries an unexpected GoCD response that has no dedicated sentinel.
+// Message is GoCD's own explanation: the top-level "message" plus any field-level
+// validation errors nested under "data" (a 422 on a pipeline create says only
+// "Validation failed." up top and names the offending field deeper down, e.g.
+// "materials[0].auto_update: ..."). Body is the raw, bounded response, kept for
+// responses that are not in that shape.
 type APIError struct {
 	StatusCode int
+	Message    string
 	Body       string
 }
 
 func (e *APIError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("gocd: %d: %s", e.StatusCode, e.Message)
+	}
 	return fmt.Sprintf("gocd: unexpected status %d: %s", e.StatusCode, e.Body)
 }

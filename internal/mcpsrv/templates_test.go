@@ -137,8 +137,9 @@ func TestTemplates_EndToEnd(t *testing.T) {
 
 	// delete: GoCD's refusal for an in-use template reaches the caller verbatim.
 	res = call("delete_template", map[string]any{"name": "t1"})
-	if !res.IsError || !strings.Contains(resultText(res), "referenced by pipeline(s): [p1]") {
-		t.Fatalf("delete_template in use: IsError=%v text=%q", res.IsError, resultText(res))
+	if text := resultText(res); !res.IsError || !strings.HasPrefix(text, "GoCD rejected the request (HTTP 422): ") ||
+		!strings.Contains(text, "referenced by pipeline(s): [p1]") || strings.Contains(text, "{") {
+		t.Fatalf("delete_template in use: IsError=%v text=%q, want GoCD's message without raw JSON", res.IsError, text)
 	}
 	res = call("delete_template", map[string]any{"name": "t2"})
 	if res.IsError {
