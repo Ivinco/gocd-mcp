@@ -77,6 +77,13 @@ func TestTemplates_EndToEnd(t *testing.T) {
 		t.Fatalf("unused template must serialize pipelines as []: %+v", t2)
 	}
 
+	// get of an unknown template is a tool error (the fake answers 404), never a
+	// handler failure: the zero output must still satisfy the output schema.
+	res = call("get_template", map[string]any{"name": "nope"})
+	if !res.IsError || !strings.Contains(resultText(res), "not found") {
+		t.Fatalf("get_template unknown: IsError=%v text=%q", res.IsError, resultText(res))
+	}
+
 	// get: config plus the ETag needed for the update.
 	res = call("get_template", map[string]any{"name": "t1"})
 	if res.IsError {

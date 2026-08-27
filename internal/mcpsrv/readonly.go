@@ -91,9 +91,12 @@ type consoleLogOutput struct {
 	Log string `json:"log"`
 }
 
+// Map-typed output fields carry omitempty: on a tool error the zero value would
+// serialize as null, which fails the SDK's output-schema validation (inferred map
+// schemas are not nullable) and turns a clean tool error into a handler failure.
 type pipelineConfigOutput struct {
 	ETag   string         `json:"etag"`
-	Config map[string]any `json:"config"`
+	Config map[string]any `json:"config,omitempty"`
 }
 
 type templateNameInput struct {
@@ -104,7 +107,7 @@ type templatesOutput struct {
 }
 type templateConfigOutput struct {
 	ETag     string         `json:"etag"`
-	Template map[string]any `json:"template"`
+	Template map[string]any `json:"template,omitempty"`
 }
 
 // registerReadOnly adds the read-only tool set. These are available in every toolset.

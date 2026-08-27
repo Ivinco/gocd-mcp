@@ -18,6 +18,16 @@ All notable changes to this project are documented here. The format is based on
   misleading 422. Deleting a template that pipelines still use is refused by GoCD;
   the refusal, naming those pipelines, is returned as the tool error.
 
+### Fixed
+
+- `get_pipeline_config` for an unknown pipeline (or any GoCD error) crashed the whole
+  server. The tool's error result carried a `null` config, which fails the SDK's
+  output-schema validation even on error results; the SDK then hands the tool-call
+  logging middleware a nil result, and dereferencing it panicked inside the SDK's
+  handler goroutine, beyond the HTTP recovery middleware. Map-typed output fields
+  are now omitted on error, and the middleware tolerates a nil result so no handler
+  failure can take the process down again.
+
 ## [1.1.0] - 2026-08-13
 
 ### Changed
