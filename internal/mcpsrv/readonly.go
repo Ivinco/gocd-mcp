@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -15,13 +14,21 @@ import (
 	"github.com/ivinco/gocd-mcp/internal/gocd"
 )
 
-// serviceFor builds a per-request domain.Service bound to the authenticated user's PAT.
-func serviceFor(ctx context.Context, cfg *config.Config) (*domain.Service, error) {
+// serviceWithLogin builds a per-request domain.Service bound to the authenticated
+// user's PAT and returns that user's GoCD login, for tools whose confirmation is
+// attributed to the caller.
+func serviceWithLogin(ctx context.Context, cfg *config.Config) (*domain.Service, string, error) {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
-		return nil, fmt.Errorf("no authenticated principal in context")
+		return nil, "", fmt.Errorf("no authenticated principal in context")
 	}
-	return domain.NewService(gocd.NewClient(cfg.GoCDBaseURL, p.PAT, cfg.GoCDTimeout)), nil
+	return domain.NewService(gocd.NewClient(cfg.GoCDBaseURL, p.PAT, cfg.GoCDTimeout)), p.Login, nil
+}
+
+// serviceFor is serviceWithLogin for tools that do not need the login.
+func serviceFor(ctx context.Context, cfg *config.Config) (*domain.Service, error) {
+	svc, _, err := serviceWithLogin(ctx, cfg)
+	return svc, err
 }
 
 // toolError maps an error to a user-facing tool error result (so the model can react),
@@ -38,12 +45,14 @@ func toolError(err error) *mcp.CallToolResult {
 		msg = "your GoCD user lacks permission for this operation"
 	case errors.Is(err, gocd.ErrNotFound):
 		msg = "not found in GoCD"
-	case errors.Is(err, gocd.ErrConflict):
+	case errors.Is(err, gocd.ErrPreconditionFailed):
 		msg = "version conflict (ETag mismatch); re-read and retry"
-		// A 409 carries GoCD's own reason (e.g. "Cannot schedule: ... is still in
-		// progress"), which beats the ETag hint meant for 412.
+	case errors.Is(err, gocd.ErrConflict):
+		// GoCD refused because of the current state and usually says why ("Cannot
+		// schedule: ... is still in progress").
+		msg = "GoCD refused the request (conflict); check the current state before retrying"
 		var ce *gocd.ConflictError
-		if errors.As(err, &ce) && ce.StatusCode == http.StatusConflict && ce.Message != "" {
+		if errors.As(err, &ce) && ce.Message != "" {
 			msg = "GoCD refused: " + ce.Message
 		}
 	case errors.As(err, &apiErr) && apiErr.Message != "":

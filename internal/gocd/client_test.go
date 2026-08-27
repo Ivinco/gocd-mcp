@@ -182,35 +182,46 @@ func TestStatusErrorMapping(t *testing.T) {
 	if _, err := c.PipelineStatus(context.Background(), "denied"); !errors.Is(err, gocd.ErrForbidden) {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
-	if _, err := c.PipelineConfig(context.Background(), "stale"); !errors.Is(err, gocd.ErrConflict) {
-		t.Fatalf("expected ErrConflict, got %v", err)
+	if _, err := c.PipelineConfig(context.Background(), "stale"); !errors.Is(err, gocd.ErrPreconditionFailed) {
+		t.Fatalf("expected ErrPreconditionFailed for a stale ETag (412), got %v", err)
 	}
 }
 
 func TestStatusError_ConflictCarriesMessage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/go/api/admin/pipelines/p" {
+		switch r.URL.Path {
+		case "/go/api/admin/pipelines/p":
 			w.WriteHeader(http.StatusPreconditionFailed) // ETag mismatch, no body
-			return
+		case "/go/api/stages/p/3/deploy/run":
+			w.WriteHeader(http.StatusConflict) // e.g. a reverse proxy: not GoCD's shape
+			_, _ = io.WriteString(w, `<html>conflict</html>`)
+		default:
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"message":"Cannot schedule: Pipeline[name='p', counter='2', label='2'] is still in progress"}`)
 		}
-		w.WriteHeader(http.StatusConflict)
-		_, _ = io.WriteString(w, `{"message":"Cannot schedule: Pipeline[name='p', counter='2', label='2'] is still in progress"}`)
 	}))
 	defer srv.Close()
 	c := gocd.NewClient(srv.URL, "tok", 5*time.Second)
 
 	err := c.RunStage(context.Background(), "p", 2, "deploy")
 	var ce *gocd.ConflictError
-	if !errors.Is(err, gocd.ErrConflict) || !errors.As(err, &ce) {
-		t.Fatalf("409 must be a ConflictError matching ErrConflict, got %T %v", err, err)
+	if !errors.Is(err, gocd.ErrConflict) || errors.Is(err, gocd.ErrPreconditionFailed) || !errors.As(err, &ce) {
+		t.Fatalf("409 must be a ConflictError matching ErrConflict only, got %T %v", err, err)
 	}
 	if ce.StatusCode != http.StatusConflict || !strings.HasPrefix(ce.Message, "Cannot schedule:") || !strings.Contains(err.Error(), "still in progress") {
 		t.Fatalf("conflict = %+v (%v), want GoCD's message", ce, err)
 	}
 
+	// A 409 whose body is not GoCD's shape carries no message (no raw fallback).
+	err = c.RunStage(context.Background(), "p", 3, "deploy")
+	if !errors.As(err, &ce) || ce.Message != "" || !errors.Is(err, gocd.ErrConflict) {
+		t.Fatalf("409 with an HTML body = %T %v, want ConflictError with empty message", err, err)
+	}
+
 	_, err = c.UpdatePipelineConfig(context.Background(), "p", json.RawMessage(`{}`), `"e"`)
-	if !errors.As(err, &ce) || ce.StatusCode != http.StatusPreconditionFailed || ce.Message != "" || !errors.Is(err, gocd.ErrConflict) {
-		t.Fatalf("412 without body = %T %v, want ConflictError{412} matching ErrConflict", err, err)
+	if !errors.As(err, &ce) || ce.StatusCode != http.StatusPreconditionFailed || ce.Message != "" ||
+		!errors.Is(err, gocd.ErrPreconditionFailed) || errors.Is(err, gocd.ErrConflict) {
+		t.Fatalf("412 without body = %T %v, want ConflictError{412} matching ErrPreconditionFailed only", err, err)
 	}
 }
 

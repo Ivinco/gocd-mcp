@@ -147,3 +147,15 @@ func TestTriggerStage_PollFailureDegradesToUnconfirmed(t *testing.T) {
 		t.Fatalf("calls = %v, want exactly one run request", f.calls)
 	}
 }
+
+func TestTriggerPipeline_PreconditionFailedIsNotFolded(t *testing.T) {
+	// Only a real 409 is folded into the confirmation wait; a 412 is an error.
+	f := &fakeClient{schedErr: &gocd.ConflictError{StatusCode: 412}}
+	svc := fastService(f)
+	if _, err := svc.TriggerPipeline(context.Background(), "p", "alice"); !errors.Is(err, gocd.ErrPreconditionFailed) {
+		t.Fatalf("412 must propagate as ErrPreconditionFailed, got %v", err)
+	}
+	if f.histCalls != 1 {
+		t.Fatalf("history reads = %d, want only the baseline", f.histCalls)
+	}
+}

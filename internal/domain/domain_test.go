@@ -37,6 +37,8 @@ type fakeClient struct {
 	inst          []*gocd.PipelineInstance // successive PipelineInstance responses (last one repeats)
 	instIdx       int
 
+	templates []gocd.TemplateSummary // returned by ListTemplates
+
 	// recorded action calls
 	calls []string
 }
@@ -134,7 +136,9 @@ func (f *fakeClient) UpdateAgent(_ context.Context, uuid string, _ json.RawMessa
 	f.calls = append(f.calls, "update_agent:"+uuid)
 	return nil
 }
-func (f *fakeClient) ListTemplates(context.Context) ([]gocd.TemplateSummary, error) { return nil, nil }
+func (f *fakeClient) ListTemplates(context.Context) ([]gocd.TemplateSummary, error) {
+	return f.templates, nil
+}
 func (f *fakeClient) TemplateConfig(context.Context, string) (*gocd.TemplateConfig, error) {
 	return &gocd.TemplateConfig{}, nil
 }

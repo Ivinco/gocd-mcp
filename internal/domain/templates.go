@@ -50,7 +50,8 @@ func (s *Service) UpdateTemplate(ctx context.Context, name string, template json
 	if err != nil {
 		return "", err
 	}
-	if bodyName != name {
+	// GoCD compares template names case-insensitively; so does its rename check.
+	if !strings.EqualFold(bodyName, name) {
 		return "", fmt.Errorf("%w: template object name %q must match %q (templates cannot be renamed)", ErrInvalidArgument, bodyName, name)
 	}
 	return s.c.UpdateTemplate(ctx, name, template, etag)

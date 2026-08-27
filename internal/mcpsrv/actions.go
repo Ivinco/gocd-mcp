@@ -65,18 +65,14 @@ func registerActions(s *mcp.Server, cfg *config.Config, log *slog.Logger) {
 		Description: "Trigger (schedule) a GoCD pipeline run with default materials.",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(false)},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in pipelineNameInput) (*mcp.CallToolResult, actionResult, error) {
-		svc, err := serviceFor(ctx, cfg)
+		// The caller's login is what GoCD records as the build-cause approver of a
+		// forced run; confirmation matches the new instance against it.
+		svc, login, err := serviceWithLogin(ctx, cfg)
 		if err != nil {
 			return nil, actionResult{}, err
 		}
 		audit(ctx, log, "trigger_pipeline", in.Name)
-		// The principal's login is what GoCD records as the build-cause approver of
-		// a forced run; confirmation matches the new instance against it.
-		p, ok := auth.PrincipalFromContext(ctx)
-		if !ok {
-			return nil, actionResult{}, fmt.Errorf("no authenticated principal in context")
-		}
-		res, err := svc.TriggerPipeline(ctx, in.Name, p.Login)
+		res, err := svc.TriggerPipeline(ctx, in.Name, login)
 		if err != nil {
 			return toolError(err), actionResult{}, nil
 		}
@@ -91,18 +87,14 @@ func registerActions(s *mcp.Server, cfg *config.Config, log *slog.Logger) {
 		Description: "Run a single stage of an existing pipeline run: start a manual-approval stage that has not run yet, or re-run a stage that already has (new stage counter). Confirms the stage was scheduled for this call rather than trusting GoCD's async accept.",
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPtr(false)},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in triggerStageInput) (*mcp.CallToolResult, actionResult, error) {
-		svc, err := serviceFor(ctx, cfg)
+		// GoCD records the caller's login as the approver of a manual run or re-run;
+		// confirmation matches the stage instance against it.
+		svc, login, err := serviceWithLogin(ctx, cfg)
 		if err != nil {
 			return nil, actionResult{}, err
 		}
 		audit(ctx, log, "trigger_stage", fmt.Sprintf("%s/%d/%s", in.Pipeline, in.PipelineCounter, in.Stage))
-		// GoCD records the caller's login as the approver of a manual run or re-run;
-		// confirmation matches the stage instance against it.
-		p, ok := auth.PrincipalFromContext(ctx)
-		if !ok {
-			return nil, actionResult{}, fmt.Errorf("no authenticated principal in context")
-		}
-		res, err := svc.TriggerStage(ctx, in.Pipeline, in.PipelineCounter, in.Stage, p.Login)
+		res, err := svc.TriggerStage(ctx, in.Pipeline, in.PipelineCounter, in.Stage, login)
 		if err != nil {
 			return toolError(err), actionResult{}, nil
 		}

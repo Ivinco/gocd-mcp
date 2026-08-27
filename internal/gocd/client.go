@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Client is a per-user GoCD API client.
@@ -94,10 +95,7 @@ func statusError(resp *http.Response) error {
 	case http.StatusNotFound:
 		return ErrNotFound
 	case http.StatusConflict, http.StatusPreconditionFailed:
-		msg, raw := readErrorBody(resp)
-		if msg == "" {
-			msg = raw
-		}
+		msg, _ := readErrorBody(resp) // no raw fallback: an unparsed body is not a reason
 		return &ConflictError{StatusCode: resp.StatusCode, Message: msg}
 	default:
 		msg, raw := readErrorBody(resp)
@@ -116,11 +114,10 @@ const (
 // flattened field-level validation errors — and the raw, bounded body as a fallback.
 // msg is empty when the body is not GoCD's {"message": ...} shape.
 func readErrorBody(resp *http.Response) (msg, raw string) {
+	// A read error only costs detail on an already failed request: whatever was read
+	// is still useful, and the status code decides the outcome either way.
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyReadLimit))
-	raw = strings.TrimSpace(string(body))
-	if len(raw) > errorTextLimit {
-		raw = raw[:errorTextLimit]
-	}
+	raw = truncate(strings.TrimSpace(string(body)), errorTextLimit)
 	var parsed struct {
 		Message string `json:"message"`
 		Data    any    `json:"data"`
@@ -134,10 +131,19 @@ func readErrorBody(resp *http.Response) (msg, raw string) {
 	if len(details) > 0 {
 		msg += " Details: " + strings.Join(details, "; ")
 	}
-	if len(msg) > errorTextLimit {
-		msg = msg[:errorTextLimit]
+	return truncate(msg, errorTextLimit), raw
+}
+
+// truncate cuts s to at most max bytes without splitting a UTF-8 sequence.
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
 	}
-	return msg, raw
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // validationDetails flattens the field-level errors GoCD nests in a response —

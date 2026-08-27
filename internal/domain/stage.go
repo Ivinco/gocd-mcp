@@ -29,6 +29,12 @@ type StageRunResult struct {
 // "Cannot schedule: ... is still in progress" while any stage of the run is active,
 // and schedules nothing — so it is returned as an error carrying GoCD's reason
 // rather than folded into the wait.
+//
+// Residual: the pipeline instance shows only a stage's latest run. If someone else
+// re-runs the stage inside the wait window — possible only once ours has finished,
+// since GoCD refuses concurrent runs — theirs hides ours and the call reports
+// unconfirmed although our run happened. Accepted and documented; confirming through
+// the stage history API (one entry per run, with its approver) would close it.
 func (s *Service) TriggerStage(ctx context.Context, pipeline string, pipelineCounter int, stage, login string) (StageRunResult, error) {
 	if err := validatePipelineName(pipeline); err != nil {
 		return StageRunResult{}, err

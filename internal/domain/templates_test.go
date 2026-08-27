@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+
+	"github.com/ivinco/gocd-mcp/internal/gocd"
 )
 
 func TestTemplateValidation(t *testing.T) {
@@ -69,5 +71,25 @@ func TestTemplateHappyPathReachesClient(t *testing.T) {
 		if f.calls[i] != want[i] {
 			t.Fatalf("call %d = %q, want %q", i, f.calls[i], want[i])
 		}
+	}
+}
+
+func TestListTemplates_Passthrough(t *testing.T) {
+	want := []gocd.TemplateSummary{{Name: "t1", Pipelines: []string{"p1"}}, {Name: "t2", Pipelines: []string{}}}
+	got, err := NewService(&fakeClient{templates: want}).ListTemplates(context.Background())
+	if err != nil || len(got) != 2 || got[0].Name != "t1" || got[1].Name != "t2" {
+		t.Fatalf("got %+v, %v; want %+v", got, err, want)
+	}
+}
+
+func TestUpdateTemplate_NameMatchIsCaseInsensitive(t *testing.T) {
+	// GoCD treats template names case-insensitively, so "Deploy" in the object may
+	// update the template addressed as "deploy".
+	f := &fakeClient{}
+	if _, err := NewService(f).UpdateTemplate(context.Background(), "deploy", json.RawMessage(`{"name":"Deploy","stages":[]}`), "etag"); err != nil {
+		t.Fatalf("case-different name must be accepted: %v", err)
+	}
+	if len(f.calls) != 1 || f.calls[0] != "update_template:deploy:etag" {
+		t.Fatalf("calls = %v", f.calls)
 	}
 }

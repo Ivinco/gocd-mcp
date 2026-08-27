@@ -33,8 +33,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
-- A `409` / `412` from GoCD now keeps GoCD's message (`gocd.ConflictError`, still
-  matching `ErrConflict`). Tool errors for a `409` show that reason ("GoCD refused:
+- A `409` from GoCD now keeps GoCD's message (`gocd.ConflictError`, matching
+  `ErrConflict`), and a `412` maps to the new `ErrPreconditionFailed` instead of
+  sharing `ErrConflict`. Tool errors for a `409` show GoCD's reason ("GoCD refused:
   …"); an ETag mismatch (`412`) keeps the re-read-and-retry hint. Verified on GoCD
   25.4.0.
 - Other GoCD errors (`422` validation failures, `5xx`) surface GoCD's explanation
@@ -53,6 +54,14 @@ All notable changes to this project are documented here. The format is based on
   handler goroutine, beyond the HTTP recovery middleware. Map-typed output fields
   are now omitted on error, and the middleware tolerates a nil result so no handler
   failure can take the process down again.
+
+### Known gaps
+
+- `trigger_stage` confirms through the pipeline instance, which shows only a stage's
+  latest run. A re-run of the same stage by someone else inside the wait window —
+  possible only once yours has finished, since GoCD refuses concurrent runs — hides
+  yours, and the call reports unconfirmed although it ran. Confirming through the
+  stage history API would close this; accepted for now.
 
 ## [1.1.0] - 2026-08-13
 
