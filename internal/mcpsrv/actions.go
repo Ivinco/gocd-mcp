@@ -99,7 +99,7 @@ func registerActions(s *mcp.Server, cfg *config.Config, log *slog.Logger) {
 			return toolError(err), actionResult{}, nil
 		}
 		if !res.Scheduled {
-			return nil, actionResult{OK: false, Detail: "run request was accepted (or GoCD reported a conflict) but no stage run attributed to this call was confirmed within the wait window; GoCD may still schedule it, so check the pipeline instance before retrying — a blind retry can run the stage twice"}, nil
+			return nil, actionResult{OK: false, Detail: "run request was accepted but no stage run attributed to this call was confirmed within the wait window; GoCD may still schedule it, so check the pipeline instance before retrying — a blind retry can run the stage twice"}, nil
 		}
 		return nil, actionResult{OK: true, Detail: fmt.Sprintf("scheduled, stage counter %d", res.StageCounter)}, nil
 	})

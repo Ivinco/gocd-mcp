@@ -90,7 +90,7 @@ type PipelineInstance struct {
 // run now.
 type InstanceStage struct {
 	Name         string        `json:"name"`
-	Counter      int           `json:"counter,omitempty"`
+	Counter      int           `json:"counter"`
 	Scheduled    bool          `json:"scheduled"`
 	ApprovalType string        `json:"approval_type,omitempty"`
 	ApprovedBy   string        `json:"approved_by,omitempty"`
