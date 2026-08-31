@@ -4,6 +4,65 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Pipeline template management (#4). Read-only tier: `list_templates` lists templates
+  with the pipelines using each one and whether the caller may edit / administer it;
+  `get_template` returns a template's full config with its ETag. `full` tier (audited):
+  `create_template`, `update_template` (optimistic locking via ETag/If-Match) and
+  `delete_template`. Verified against the GoCD 25.4.0 templates API (`v7`).
+  `update_template` rejects an object whose name differs from the target before the
+  round-trip — the API cannot rename templates and answers a mismatch with a
+  misleading 422. Deleting a template that pipelines still use is refused by GoCD;
+  the refusal, naming those pipelines, is returned as the tool error.
+- `trigger_stage` (`actions` tier, audited) runs one stage of an existing pipeline run:
+  a manual-approval stage that has not run yet, or a fresh run of a stage that already
+  has. Confirmation follows `trigger_pipeline`: GoCD's async accept is not trusted, and
+  the tool reports `ok:true` only once the pipeline instance shows the stage scheduled,
+  with a counter above the baseline read before the request, and approved by the
+  calling user — otherwise the unconfirmed `ok:false` result, never an error, so a
+  blind retry does not run the stage twice. One deliberate difference: GoCD's 409 for
+  a stage run ("Cannot schedule: … is still in progress") is a synchronous refusal
+  that schedules nothing, so it is returned at once as an error carrying that reason
+  instead of being folded into the wait.
+- `get_pipeline_instance` stages now carry `counter`, `scheduled`, `approval_type`,
+  `approved_by` and `can_run`, so a manual stage awaiting approval — and the stage
+  counter that `cancel_stage` and `get_job_console_log` need — can be read directly.
+
+### Changed
+
+- A `409` from GoCD now keeps GoCD's message (`gocd.ConflictError`, matching
+  `ErrConflict`), and a `412` maps to the new `ErrPreconditionFailed` instead of
+  sharing `ErrConflict`. Tool errors for a `409` show GoCD's reason ("GoCD refused:
+  …"); an ETag mismatch (`412`) keeps the re-read-and-retry hint. Verified on GoCD
+  25.4.0.
+- Other GoCD errors (`422` validation failures, `5xx`) surface GoCD's explanation
+  instead of the raw JSON body: the tool error reads "GoCD rejected the request (HTTP
+  422): <message>", followed by the field-level validation errors GoCD nests under
+  `data` ("Details: materials[0].auto_update: …") — where the top-level message often
+  says no more than "Validation failed.". Responses that are not in GoCD's
+  `{"message": …}` shape still fall back to the raw body.
+
+### Fixed
+
+- `get_pipeline_config` for an unknown pipeline (or any GoCD error) crashed the whole
+  server. The tool's error result carried a `null` config, which fails the SDK's
+  output-schema validation even on error results; the SDK then hands the tool-call
+  logging middleware a nil result, and dereferencing it panicked inside the SDK's
+  handler goroutine, beyond the HTTP recovery middleware. Map-typed output fields
+  are now omitted on error, and the middleware tolerates a nil result so no handler
+  failure can take the process down again.
+
+### Known gaps
+
+- `trigger_stage` confirms through the pipeline instance, which shows only a stage's
+  latest run. A re-run of the same stage by someone else inside the wait window —
+  possible only once yours has finished, since GoCD refuses concurrent runs — hides
+  yours, and the call reports unconfirmed although it ran. Confirming through the
+  stage history API would close this; accepted for now.
+
 ## [1.1.0] - 2026-08-13
 
 ### Changed

@@ -80,21 +80,30 @@ func TestDeletePipeline_Request(t *testing.T) {
 
 func TestPipelineInstance(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// GoCD serializes stage counters as strings here; the unscheduled second stage
+		// is how a manual stage awaiting approval looks (counter "1", scheduled false).
 		_, _ = w.Write([]byte(`{"name":"p","counter":3,"label":"3","scheduled_date":123,"comment":"c",
-			"stages":[{"name":"run","status":"Passed","result":"Passed",
-			"jobs":[{"name":"echo","state":"Completed","result":"Passed","scheduled_date":456}]}]}`))
+			"stages":[{"name":"run","counter":"2","scheduled":true,"approval_type":"manual","approved_by":"alice","can_run":true,"status":"Passed","result":"Passed",
+			"jobs":[{"name":"echo","state":"Completed","result":"Passed","scheduled_date":456}]},
+			{"name":"deploy","counter":"1","scheduled":false,"approval_type":null,"approved_by":null,"can_run":true,"status":"Unknown","result":null}]}`))
 	}))
 	defer srv.Close()
 	inst, err := gocd.NewClient(srv.URL, "tok", 5*time.Second).PipelineInstance(context.Background(), "p", 3)
 	if err != nil {
 		t.Fatalf("instance: %v", err)
 	}
-	if inst.Counter != 3 || len(inst.Stages) != 1 {
+	if inst.Counter != 3 || len(inst.Stages) != 2 {
 		t.Fatalf("instance mapped wrong: %+v", inst)
 	}
 	st := inst.Stages[0]
 	if st.Name != "run" || st.Result != "Passed" || len(st.Jobs) != 1 {
 		t.Fatalf("stage mapped wrong: %+v", st)
+	}
+	if st.Counter != 2 || !st.Scheduled || st.ApprovalType != "manual" || st.ApprovedBy != "alice" || !st.CanRun {
+		t.Fatalf("stage run fields mapped wrong: %+v", st)
+	}
+	if d := inst.Stages[1]; d.Name != "deploy" || d.Counter != 1 || d.Scheduled || d.ApprovedBy != "" {
+		t.Fatalf("unscheduled stage mapped wrong: %+v", d)
 	}
 	if j := st.Jobs[0]; j.Name != "echo" || j.State != "Completed" || j.Result != "Passed" {
 		t.Fatalf("job mapped wrong: %+v", j)

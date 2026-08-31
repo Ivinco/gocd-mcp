@@ -29,6 +29,7 @@ const goodToken = "goodtoken"
 func fakeGoCD(t *testing.T) *httptest.Server {
 	t.Helper()
 	var triggered atomic.Bool // flips once pipeline "tp" is scheduled, so history advances
+	var stageRun atomic.Bool  // flips once tp/1/deploy is run, so the instance shows it scheduled
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+goodToken {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -62,8 +63,53 @@ func fakeGoCD(t *testing.T) *httptest.Server {
 				counter = 2
 			}
 			_, _ = io.WriteString(w, fmt.Sprintf(`{"_links":{"next":{"href":"http://gocd.example/go/api/pipelines/tp/history?after=42"}},"pipelines":[{"counter":%d,"label":"%d","build_cause":{"approver":"alice","trigger_forced":true},"stages":[]}]}`, counter, counter))
+		case "/go/api/stages/tp/1/deploy/run":
+			stageRun.Store(true)
+			w.WriteHeader(http.StatusAccepted)
+		case "/go/api/stages/tp/1/build/run":
+			// GoCD's synchronous refusal while a stage of the run is active.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"message":"Cannot schedule: Pipeline[name='tp', counter='2', label='2'] is still in progress"}`)
+		case "/go/api/pipelines/tp/1":
+			// Stage counters are strings in this API. "deploy" is a manual stage: pending
+			// (counter "1", scheduled false) until run, then scheduled and approved by the
+			// authenticated user.
+			w.Header().Set("Content-Type", "application/json")
+			deploy := `{"name":"deploy","counter":"1","scheduled":false,"approval_type":null,"approved_by":null,"can_run":true,"status":"Unknown","result":null,"jobs":[]}`
+			if stageRun.Load() {
+				deploy = `{"name":"deploy","counter":"1","scheduled":true,"approval_type":"manual","approved_by":"alice","can_run":false,"status":"Building","result":"Unknown","jobs":[]}`
+			}
+			_, _ = io.WriteString(w, `{"name":"tp","counter":1,"label":"1","stages":[{"name":"build","counter":"1","scheduled":true,"approval_type":"success","approved_by":"changes","can_run":true,"status":"Passed","result":"Passed","jobs":[]},`+deploy+`]}`)
 		case "/go/api/admin/pipelines/stale":
 			w.WriteHeader(http.StatusPreconditionFailed) // simulate ETag conflict
+		case "/go/api/admin/templates":
+			if r.Method == http.MethodPost {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"_embedded":{"templates":[{"name":"t1","can_edit":true,"can_administer":true,"_embedded":{"pipelines":[{"name":"p1"}]}},{"name":"t2","can_edit":true,"can_administer":true,"_embedded":{"pipelines":[]}}]}}`)
+		case "/go/api/admin/templates/t1":
+			switch r.Method {
+			case http.MethodGet:
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("ETag", `"tpl-etag-1"`)
+				_, _ = io.WriteString(w, `{"name":"t1","stages":[{"name":"build"}]}`)
+			case http.MethodPut:
+				if r.Header.Get("If-Match") != `"tpl-etag-1"` {
+					w.WriteHeader(http.StatusPreconditionFailed)
+					return
+				}
+				w.Header().Set("ETag", `"tpl-etag-2"`)
+				w.WriteHeader(http.StatusOK)
+			case http.MethodDelete:
+				// Still used by p1: GoCD refuses and names the pipelines.
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = io.WriteString(w, `{"message":"Validations failed for template with name 't1'. Error(s): [The template 't1' is being referenced by pipeline(s): [p1]]. Please correct and resubmit."}`)
+			}
+		case "/go/api/admin/templates/t2":
+			w.WriteHeader(http.StatusOK) // DELETE of an unused template
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -481,6 +527,23 @@ func TestConfigToolset_Gating(t *testing.T) {
 	defer full.Close()
 	if !hasTool(full, "update_pipeline_config") {
 		t.Fatalf("full toolset must expose update_pipeline_config")
+	}
+
+	// Template tools follow the same tiers: reads everywhere, writes only in full.
+	readonly := stackCfg(t, gocd.URL, "readonly", nil)
+	defer readonly.Close()
+	for _, name := range []string{"list_templates", "get_template"} {
+		if !hasTool(readonly, name) {
+			t.Fatalf("readonly toolset must expose %s", name)
+		}
+	}
+	for _, name := range []string{"create_template", "update_template", "delete_template"} {
+		if hasTool(actions, name) {
+			t.Fatalf("actions toolset must not expose %s", name)
+		}
+		if !hasTool(full, name) {
+			t.Fatalf("full toolset must expose %s", name)
+		}
 	}
 }
 

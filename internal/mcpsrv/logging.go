@@ -30,7 +30,9 @@ func toolCallLogger(log *slog.Logger) mcp.Middleware {
 			res, err := next(ctx, method, req)
 
 			ok := err == nil
-			if ctr, isCTR := res.(*mcp.CallToolResult); isCTR && ctr.IsError {
+			// res may be a typed nil (*CallToolResult)(nil) when the SDK's own tool
+			// wrapper fails, e.g. on output-schema validation — never dereference it.
+			if ctr, isCTR := res.(*mcp.CallToolResult); isCTR && ctr != nil && ctr.IsError {
 				ok = false
 			}
 			login := ""

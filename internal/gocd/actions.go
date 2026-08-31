@@ -64,6 +64,20 @@ func (c *Client) CancelStage(ctx context.Context, pipeline string, pipelineCount
 	return err
 }
 
+// RunStage runs (or re-runs) one stage of an existing pipeline instance. Requires
+// the confirm header; GoCD answers 202 and schedules the stage asynchronously.
+func (c *Client) RunStage(ctx context.Context, pipeline string, pipelineCounter int, stage string) error {
+	path := "/go/api/stages/" + esc(pipeline) + "/" + strconv.Itoa(pipelineCounter) +
+		"/" + esc(stage) + "/run"
+	_, err := c.doJSON(ctx, request{
+		method:  http.MethodPost,
+		path:    path,
+		accept:  acceptStageRun,
+		headers: confirmHeaders(),
+	}, nil)
+	return err
+}
+
 // CommentOnPipeline adds a comment to a pipeline instance.
 func (c *Client) CommentOnPipeline(ctx context.Context, name string, counter int, comment string) error {
 	body, _ := json.Marshal(map[string]string{"comment": comment})

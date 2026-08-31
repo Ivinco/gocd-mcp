@@ -9,10 +9,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Client is a per-user GoCD API client.
@@ -91,11 +95,93 @@ func statusError(resp *http.Response) error {
 	case http.StatusNotFound:
 		return ErrNotFound
 	case http.StatusConflict, http.StatusPreconditionFailed:
-		return ErrConflict
+		msg, _ := readErrorBody(resp) // no raw fallback: an unparsed body is not a reason
+		return &ConflictError{StatusCode: resp.StatusCode, Message: msg}
 	default:
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return &APIError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+		msg, raw := readErrorBody(resp)
+		return &APIError{StatusCode: resp.StatusCode, Message: msg, Body: raw}
 	}
+}
+
+// Error bodies are read generously (validation failures echo the whole submitted
+// object back under "data"), but what we keep is bounded.
+const (
+	errorBodyReadLimit = 64 << 10
+	errorTextLimit     = 2048
+)
+
+// readErrorBody returns GoCD's explanation of an error response — its "message" plus
+// flattened field-level validation errors — and the raw, bounded body as a fallback.
+// msg is empty when the body is not GoCD's {"message": ...} shape.
+func readErrorBody(resp *http.Response) (msg, raw string) {
+	// A read error only costs detail on an already failed request: whatever was read
+	// is still useful, and the status code decides the outcome either way.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyReadLimit))
+	raw = truncate(strings.TrimSpace(string(body)), errorTextLimit)
+	var parsed struct {
+		Message string `json:"message"`
+		Data    any    `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || parsed.Message == "" {
+		return "", raw
+	}
+	var details []string
+	validationDetails(parsed.Data, "", &details)
+	msg = parsed.Message
+	if len(details) > 0 {
+		msg += " Details: " + strings.Join(details, "; ")
+	}
+	return truncate(msg, errorTextLimit), raw
+}
+
+// truncate cuts s to at most max bytes without splitting a UTF-8 sequence.
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// validationDetails flattens the field-level errors GoCD nests in a response —
+// objects carrying an "errors" map of field → messages — into "path.field: message"
+// entries such as "materials[0].auto_update: The material ... is used elsewhere".
+func validationDetails(v any, path string, out *[]string) {
+	switch t := v.(type) {
+	case map[string]any:
+		if errs, ok := t["errors"].(map[string]any); ok {
+			for _, field := range slices.Sorted(maps.Keys(errs)) {
+				var msgs []string
+				if list, ok := errs[field].([]any); ok {
+					for _, m := range list {
+						msgs = append(msgs, fmt.Sprint(m))
+					}
+				} else {
+					msgs = append(msgs, fmt.Sprint(errs[field]))
+				}
+				*out = append(*out, joinPath(path, field)+": "+strings.Join(msgs, "; "))
+			}
+		}
+		for _, k := range slices.Sorted(maps.Keys(t)) {
+			if k != "errors" {
+				validationDetails(t[k], joinPath(path, k), out)
+			}
+		}
+	case []any:
+		for i, child := range t {
+			validationDetails(child, fmt.Sprintf("%s[%d]", path, i), out)
+		}
+	}
+}
+
+func joinPath(path, key string) string {
+	if path == "" {
+		return key
+	}
+	return path + "." + key
 }
 
 // User is the subset of GoCD's current_user response we rely on.

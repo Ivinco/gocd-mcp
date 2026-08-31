@@ -117,3 +117,21 @@ func TestCommentOnPipeline(t *testing.T) {
 		t.Fatalf("comment accept = %q", rec.accept)
 	}
 }
+
+func TestRunStage(t *testing.T) {
+	var rec capture
+	srv := captureServer(t, &rec)
+	defer srv.Close()
+	if err := gocd.NewClient(srv.URL, "tok", 5*time.Second).RunStage(context.Background(), "p", 4, "deploy"); err != nil {
+		t.Fatalf("run stage: %v", err)
+	}
+	if rec.method != http.MethodPost || rec.path != "/go/api/stages/p/4/deploy/run" {
+		t.Fatalf("run stage request wrong: %s %s", rec.method, rec.path)
+	}
+	if rec.accept != "application/vnd.go.cd.v2+json" {
+		t.Fatalf("run stage accept = %q, want v2", rec.accept)
+	}
+	if rec.confirm != "true" {
+		t.Fatalf("run stage missing confirm header")
+	}
+}

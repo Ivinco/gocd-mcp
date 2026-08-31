@@ -14,19 +14,28 @@ import (
 	"github.com/ivinco/gocd-mcp/internal/gocd"
 )
 
-// serviceFor builds a per-request domain.Service bound to the authenticated user's PAT.
-func serviceFor(ctx context.Context, cfg *config.Config) (*domain.Service, error) {
+// serviceWithLogin builds a per-request domain.Service bound to the authenticated
+// user's PAT and returns that user's GoCD login, for tools whose confirmation is
+// attributed to the caller.
+func serviceWithLogin(ctx context.Context, cfg *config.Config) (*domain.Service, string, error) {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
-		return nil, fmt.Errorf("no authenticated principal in context")
+		return nil, "", fmt.Errorf("no authenticated principal in context")
 	}
-	return domain.NewService(gocd.NewClient(cfg.GoCDBaseURL, p.PAT, cfg.GoCDTimeout)), nil
+	return domain.NewService(gocd.NewClient(cfg.GoCDBaseURL, p.PAT, cfg.GoCDTimeout)), p.Login, nil
+}
+
+// serviceFor is serviceWithLogin for tools that do not need the login.
+func serviceFor(ctx context.Context, cfg *config.Config) (*domain.Service, error) {
+	svc, _, err := serviceWithLogin(ctx, cfg)
+	return svc, err
 }
 
 // toolError maps an error to a user-facing tool error result (so the model can react),
 // translating GoCD sentinels into friendly messages.
 func toolError(err error) *mcp.CallToolResult {
 	msg := err.Error()
+	var apiErr *gocd.APIError
 	switch {
 	case errors.Is(err, domain.ErrInvalidArgument):
 		// already user-facing
@@ -36,8 +45,19 @@ func toolError(err error) *mcp.CallToolResult {
 		msg = "your GoCD user lacks permission for this operation"
 	case errors.Is(err, gocd.ErrNotFound):
 		msg = "not found in GoCD"
-	case errors.Is(err, gocd.ErrConflict):
+	case errors.Is(err, gocd.ErrPreconditionFailed):
 		msg = "version conflict (ETag mismatch); re-read and retry"
+	case errors.Is(err, gocd.ErrConflict):
+		// GoCD refused because of the current state and usually says why ("Cannot
+		// schedule: ... is still in progress").
+		msg = "GoCD refused the request (conflict); check the current state before retrying"
+		var ce *gocd.ConflictError
+		if errors.As(err, &ce) && ce.Message != "" {
+			msg = "GoCD refused: " + ce.Message
+		}
+	case errors.As(err, &apiErr) && apiErr.Message != "":
+		// GoCD's own explanation (validation failures name the offending fields).
+		msg = fmt.Sprintf("GoCD rejected the request (HTTP %d): %s", apiErr.StatusCode, apiErr.Message)
 	}
 	return &mcp.CallToolResult{
 		IsError: true,
@@ -91,9 +111,23 @@ type consoleLogOutput struct {
 	Log string `json:"log"`
 }
 
+// Map-typed output fields carry omitempty: on a tool error the zero value would
+// serialize as null, which fails the SDK's output-schema validation (inferred map
+// schemas are not nullable) and turns a clean tool error into a handler failure.
 type pipelineConfigOutput struct {
 	ETag   string         `json:"etag"`
-	Config map[string]any `json:"config"`
+	Config map[string]any `json:"config,omitempty"`
+}
+
+type templateNameInput struct {
+	Name string `json:"name" jsonschema:"the GoCD pipeline template name"`
+}
+type templatesOutput struct {
+	Templates []gocd.TemplateSummary `json:"templates"`
+}
+type templateConfigOutput struct {
+	ETag     string         `json:"etag"`
+	Template map[string]any `json:"template,omitempty"`
 }
 
 // registerReadOnly adds the read-only tool set. These are available in every toolset.
@@ -216,5 +250,41 @@ func registerReadOnly(s *mcp.Server, cfg *config.Config) {
 			return toolError(fmt.Errorf("decode pipeline config: %w", err)), pipelineConfigOutput{}, nil
 		}
 		return nil, pipelineConfigOutput{ETag: cfgResult.ETag, Config: m}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "list_templates",
+		Description: "List GoCD pipeline templates with the pipelines using each one and whether you can edit / administer it.",
+		Annotations: readOnly(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, templatesOutput, error) {
+		svc, err := serviceFor(ctx, cfg)
+		if err != nil {
+			return nil, templatesOutput{}, err
+		}
+		tpls, err := svc.ListTemplates(ctx)
+		if err != nil {
+			return toolError(err), templatesOutput{}, nil
+		}
+		return nil, templatesOutput{Templates: tpls}, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_template",
+		Description: "Get the full configuration of a GoCD pipeline template (name and stages) plus its ETag (needed to update the template later).",
+		Annotations: readOnly(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in templateNameInput) (*mcp.CallToolResult, templateConfigOutput, error) {
+		svc, err := serviceFor(ctx, cfg)
+		if err != nil {
+			return nil, templateConfigOutput{}, err
+		}
+		tpl, err := svc.TemplateConfig(ctx, in.Name)
+		if err != nil {
+			return toolError(err), templateConfigOutput{}, nil
+		}
+		var m map[string]any
+		if err := json.Unmarshal(tpl.Config, &m); err != nil {
+			return toolError(fmt.Errorf("decode template config: %w", err)), templateConfigOutput{}, nil
+		}
+		return nil, templateConfigOutput{ETag: tpl.ETag, Template: m}, nil
 	})
 }

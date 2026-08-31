@@ -28,17 +28,23 @@ type Client interface {
 	PipelineConfig(ctx context.Context, name string) (*gocd.PipelineConfig, error)
 	PipelineInstance(ctx context.Context, name string, counter int) (*gocd.PipelineInstance, error)
 	JobConsoleLog(ctx context.Context, pipeline string, pipelineCounter int, stage string, stageCounter int, job string) (string, error)
+	ListTemplates(ctx context.Context) ([]gocd.TemplateSummary, error)
+	TemplateConfig(ctx context.Context, name string) (*gocd.TemplateConfig, error)
 
 	SchedulePipeline(ctx context.Context, name string) error
 	PausePipeline(ctx context.Context, name, cause string) error
 	UnpausePipeline(ctx context.Context, name string) error
 	CancelStage(ctx context.Context, pipeline string, pipelineCounter int, stage string, stageCounter int) error
+	RunStage(ctx context.Context, pipeline string, pipelineCounter int, stage string) error
 	CommentOnPipeline(ctx context.Context, name string, counter int, comment string) error
 
 	UpdatePipelineConfig(ctx context.Context, name string, config json.RawMessage, etag string) (string, error)
 	CreatePipeline(ctx context.Context, body json.RawMessage) error
 	UpdateAgent(ctx context.Context, uuid string, patch json.RawMessage) error
 	DeletePipeline(ctx context.Context, name string) error
+	CreateTemplate(ctx context.Context, template json.RawMessage) error
+	UpdateTemplate(ctx context.Context, name string, template json.RawMessage, etag string) (string, error)
+	DeleteTemplate(ctx context.Context, name string) error
 }
 
 // Service exposes GoCD operations to the MCP layer.
@@ -132,12 +138,17 @@ func (s *Service) PipelineInstance(ctx context.Context, name string, counter int
 }
 
 // validatePipelineName rejects empty names and names that would break the URL path.
-func validatePipelineName(name string) error {
+func validatePipelineName(name string) error { return validateName("pipeline", name) }
+
+// validateTemplateName applies the same rules to pipeline template names.
+func validateTemplateName(name string) error { return validateName("template", name) }
+
+func validateName(kind, name string) error {
 	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("%w: pipeline name is required", ErrInvalidArgument)
+		return fmt.Errorf("%w: %s name is required", ErrInvalidArgument, kind)
 	}
 	if strings.ContainsAny(name, "/\\ \t\n") {
-		return fmt.Errorf("%w: pipeline name %q contains invalid characters", ErrInvalidArgument, name)
+		return fmt.Errorf("%w: %s name %q contains invalid characters", ErrInvalidArgument, kind, name)
 	}
 	return nil
 }

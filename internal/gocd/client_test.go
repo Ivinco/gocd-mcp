@@ -2,7 +2,9 @@ package gocd_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -180,7 +182,90 @@ func TestStatusErrorMapping(t *testing.T) {
 	if _, err := c.PipelineStatus(context.Background(), "denied"); !errors.Is(err, gocd.ErrForbidden) {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
-	if _, err := c.PipelineConfig(context.Background(), "stale"); !errors.Is(err, gocd.ErrConflict) {
-		t.Fatalf("expected ErrConflict, got %v", err)
+	if _, err := c.PipelineConfig(context.Background(), "stale"); !errors.Is(err, gocd.ErrPreconditionFailed) {
+		t.Fatalf("expected ErrPreconditionFailed for a stale ETag (412), got %v", err)
+	}
+}
+
+func TestStatusError_ConflictCarriesMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/go/api/admin/pipelines/p":
+			w.WriteHeader(http.StatusPreconditionFailed) // ETag mismatch, no body
+		case "/go/api/stages/p/3/deploy/run":
+			w.WriteHeader(http.StatusConflict) // e.g. a reverse proxy: not GoCD's shape
+			_, _ = io.WriteString(w, `<html>conflict</html>`)
+		default:
+			w.WriteHeader(http.StatusConflict)
+			_, _ = io.WriteString(w, `{"message":"Cannot schedule: Pipeline[name='p', counter='2', label='2'] is still in progress"}`)
+		}
+	}))
+	defer srv.Close()
+	c := gocd.NewClient(srv.URL, "tok", 5*time.Second)
+
+	err := c.RunStage(context.Background(), "p", 2, "deploy")
+	var ce *gocd.ConflictError
+	if !errors.Is(err, gocd.ErrConflict) || errors.Is(err, gocd.ErrPreconditionFailed) || !errors.As(err, &ce) {
+		t.Fatalf("409 must be a ConflictError matching ErrConflict only, got %T %v", err, err)
+	}
+	if ce.StatusCode != http.StatusConflict || !strings.HasPrefix(ce.Message, "Cannot schedule:") || !strings.Contains(err.Error(), "still in progress") {
+		t.Fatalf("conflict = %+v (%v), want GoCD's message", ce, err)
+	}
+
+	// A 409 whose body is not GoCD's shape carries no message (no raw fallback).
+	err = c.RunStage(context.Background(), "p", 3, "deploy")
+	if !errors.As(err, &ce) || ce.Message != "" || !errors.Is(err, gocd.ErrConflict) {
+		t.Fatalf("409 with an HTML body = %T %v, want ConflictError with empty message", err, err)
+	}
+
+	_, err = c.UpdatePipelineConfig(context.Background(), "p", json.RawMessage(`{}`), `"e"`)
+	if !errors.As(err, &ce) || ce.StatusCode != http.StatusPreconditionFailed || ce.Message != "" ||
+		!errors.Is(err, gocd.ErrPreconditionFailed) || errors.Is(err, gocd.ErrConflict) {
+		t.Fatalf("412 without body = %T %v, want ConflictError{412} matching ErrPreconditionFailed only", err, err)
+	}
+}
+
+func TestStatusError_APIErrorCarriesMessageAndValidationDetails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/go/api/admin/pipelines":
+			// A 422 whose top-level message is useless; the reasons sit in nested errors.
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"message":"Validations failed for pipeline 'p'. Error(s): [Validation failed.].",
+				"data":{"name":"p","materials":[{"type":"git","errors":{"auto_update":["used elsewhere with a different value"]}}],
+				"stages":[{"name":"s","jobs":[{"name":"j","errors":{"name":["is a duplicate","is reserved"]}}]}]}}`)
+		case "/go/api/admin/templates":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"message":"Save failed. Please check the logs.","data":{"name":"t"}}`)
+		default:
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, "<html>bad gateway</html>")
+		}
+	}))
+	defer srv.Close()
+	c := gocd.NewClient(srv.URL, "tok", 5*time.Second)
+
+	err := c.CreatePipeline(context.Background(), json.RawMessage(`{}`))
+	var ae *gocd.APIError
+	if !errors.As(err, &ae) || ae.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("422 must be an APIError, got %T %v", err, err)
+	}
+	want := "Validations failed for pipeline 'p'. Error(s): [Validation failed.]. Details: " +
+		"materials[0].auto_update: used elsewhere with a different value; stages[0].jobs[0].name: is a duplicate; is reserved"
+	if ae.Message != want {
+		t.Fatalf("message =\n%q\nwant\n%q", ae.Message, want)
+	}
+	if !strings.Contains(err.Error(), "gocd: 422: Validations failed") {
+		t.Fatalf("Error() = %q", err.Error())
+	}
+
+	err = c.CreateTemplate(context.Background(), json.RawMessage(`{}`))
+	if !errors.As(err, &ae) || ae.Message != "Save failed. Please check the logs." {
+		t.Fatalf("message-only body: got %T %v", err, err)
+	}
+
+	_, err = c.ListAgents(context.Background())
+	if !errors.As(err, &ae) || ae.Message != "" || ae.Body != "<html>bad gateway</html>" || !strings.Contains(err.Error(), "unexpected status 502") {
+		t.Fatalf("non-JSON body must fall back to the raw body: %T %+v", err, ae)
 	}
 }

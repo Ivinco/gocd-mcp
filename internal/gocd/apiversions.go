@@ -16,6 +16,7 @@ const (
 	acceptCancelStage    = "application/vnd.go.cd.v3+json"
 	acceptComment        = "application/vnd.go.cd.v1+json"
 	acceptInstance       = "application/vnd.go.cd.v1+json"
+	acceptTemplates      = "application/vnd.go.cd.v7+json"
 	// delete pipeline reuses the admin pipelines config media type (v11).
 )
 
